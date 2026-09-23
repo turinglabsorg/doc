@@ -74,12 +74,14 @@ class BothAgents(unittest.TestCase):
     def test_reply_from_codex_payload(self):
         from doc import reply_check
         seen = {}
-        with mock.patch.object(reply_check, "judge", side_effect=lambda r: seen.setdefault("reply", r) and 0.0):
+        reply = "A reply long enough to be judged: this takes about 2 days of work."
+        with mock.patch.object(reply_check, "judge", side_effect=lambda r: seen.setdefault("reply", r) and 0.0), \
+                mock.patch.object(reply_check.jev, "note"):
             with mock.patch("sys.stdin", io.StringIO(json.dumps({
                     "hook_event_name": "Stop", "turn_id": "t", "stop_hook_active": False,
-                    "last_assistant_message": "A reply long enough to be judged by the check."}))):
+                    "last_assistant_message": reply}))):
                 reply_check.main()
-        self.assertEqual(seen["reply"], "A reply long enough to be judged by the check.")
+        self.assertEqual(seen["reply"], reply)
 
     def test_reply_from_claude_transcript(self):
         from doc import reply_check
@@ -135,6 +137,73 @@ class HookWrapper(unittest.TestCase):
 
     def test_other_hooks_always_run(self):
         self.assertTrue(self.started_hush("skill_router", "anything"))
+
+
+def _rank(probabilities, needs):
+    return {"best": {"choice": max(probabilities, key=probabilities.get), "probabilities": probabilities,
+                     "confidence": max(probabilities.values())}, "needs": {"noul": needs}}
+
+
+class Economy(unittest.TestCase):
+    """Jev is asked only when its answer can change what the agent sees."""
+
+    SKILLS = [{"name": n, "description": n + " skill", "body": ""} for n in ("hush", "devo", "grog-talk")]
+
+    def test_confident_ranking_answers_with_one_request(self):
+        from doc import skill_router
+        with mock.patch.object(skill_router.jev, "ask", side_effect=[_rank({"hush": 0.9, "devo": 0.05, "none": 0.05}, 0.9)]) as ask:
+            self.assertEqual(skill_router.suggest("put the master keys in hush", self.SKILLS), "hush")
+        self.assertEqual(ask.call_count, 1)
+
+    def test_unsure_ranking_is_verified(self):
+        from doc import skill_router
+        answers = [_rank({"devo": 0.6, "hush": 0.2, "none": 0.2}, 0.7), {"fit_0": {"noul": 0.8}, "fit_1": {"noul": 0.1}, "fit_2": {"noul": 0.0}}]
+        with mock.patch.object(skill_router.jev, "ask", side_effect=answers) as ask:
+            self.assertEqual(skill_router.suggest("did the cloud logins break?", self.SKILLS), "devo")
+        self.assertEqual(ask.call_count, 2)
+
+    def test_weak_ranking_stops_after_one_request(self):
+        from doc import skill_router
+        with mock.patch.object(skill_router.jev, "ask", side_effect=[_rank({"devo": 0.2, "none": 0.8}, 0.6)]) as ask:
+            self.assertIsNone(skill_router.suggest("are we done yet?", self.SKILLS))
+        self.assertEqual(ask.call_count, 1)
+
+    def test_harness_texts_never_reach_jev(self):
+        from doc import skill_router
+        for prompt in ["Stop hook feedback: task #3 remains unresolved and more", "This session is being continued from a previous conversation",
+                       "<task-notification>done</task-notification> and more text"]:
+            with mock.patch.object(skill_router, "suggest", side_effect=AssertionError("asked Jev")), \
+                    mock.patch("sys.stdin", io.StringIO(json.dumps({"prompt": prompt, "session_id": "s"}))):
+                skill_router.main()
+
+    def test_a_skill_is_suggested_once_per_session(self):
+        from doc import skill_router
+        seen = tempfile.mkdtemp()
+        outputs = []
+        for _ in range(2):
+            with mock.patch.object(skill_router, "SEEN_DIR", seen), \
+                    mock.patch.object(skill_router, "load_skills", return_value=self.SKILLS), \
+                    mock.patch.object(skill_router, "suggest", return_value="hush"), \
+                    mock.patch.object(skill_router.jev, "note"), \
+                    mock.patch("sys.stdin", io.StringIO(json.dumps({"prompt": "here is the key for the service", "session_id": "abc"}))), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                skill_router.main()
+                outputs.append(out.getvalue())
+        self.assertIn("hush", outputs[0])
+        self.assertEqual(outputs[1], "")
+
+    def test_replies_without_durations_skip_jev(self):
+        from doc import reply_check
+        for reply in ["Tests pass and the branch is merged; the report is on the issue.",
+                      "La build è verde, ho aggiornato il README e aperto la PR su GitHub."]:
+            self.assertIsNone(reply_check.DURATION.search(reply), reply)
+
+    def test_estimates_reach_jev(self):
+        from doc import reply_check
+        for reply in ["Questa modifica richiede circa tre giorni di sviluppo.", "It will take about 2 hours.",
+                      "Ci vogliono un paio di giorni.", "Stima: mezza giornata di lavoro.", "Should be done in 3-4 days.",
+                      "A few days of work at most."]:
+            self.assertIsNotNone(reply_check.DURATION.search(reply), reply)
 
 
 class Outcomes(unittest.TestCase):

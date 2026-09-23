@@ -5,14 +5,29 @@ payload as `last_assistant_message`).
 The rule: never give effort or time estimates for work. When the last reply
 carries one, the stop is blocked once with the reason, so the agent rewrites
 it; a second stop in the same chain always passes, so this cannot loop.
+
+Most replies name no duration at all, and those never reach Jev: a text match
+on durations and estimate words decides that first (on 846 real replies of a
+day, 11% matched). Jev then tells an effort estimate apart from a process time.
 """
 
 import json
+import re
 import sys
 
 from doc import jev
 
 BLOCK_AT = 0.8
+
+_UNITS = (r"(?:min|minut[io]|minutes?|or[ae]|h|hrs?|hours?|giorn[oi]|gg|days?|settiman[ae]|weeks?|"
+          r"mes[ei]|months?)")
+DURATION = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*(?:[-–]\s*\d+(?:[.,]\d+)?\s*)?" + _UNITS + r"\b"
+    r"|\b(?:un[oa]?|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|qualche|poch[ie]|alcun[ie]|one|two|"
+    r"three|four|five|six|seven|eight|nine|ten|a few|few|several|a couple of|un paio di)\s+" + _UNITS + r"\b"
+    r"|mezza giornata|mezz'ora|half an? (?:hour|day)|\bstim[ae]\b|\bstimat[oi]\b|\bestimat\w*|\beffort\b",
+    re.IGNORECASE,
+)
 
 QUESTION = {
     "effort": jev.noul(
@@ -59,6 +74,9 @@ def main():
     # Codex passes the reply itself; Claude Code only points at its transcript.
     reply = payload.get("last_assistant_message") or last_reply(payload.get("transcript_path") or "")
     if len(reply.strip()) < 40:
+        return
+    if not DURATION.search(reply):
+        jev.note("reply_check", "skipped")
         return
     try:
         value = judge(reply)

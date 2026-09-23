@@ -6,8 +6,8 @@ wired into Claude Code, where ordinary code needs a bit of common sense.
 | Part | Hook / command | What it does |
 |---|---|---|
 | `publish_guard` | PreToolUse (Bash) | Before `gh`/`grog` publishes a comment: exact rules in code (local paths, attribution lines), Jev for local-only state, effort estimates, process narration, billing. Deny with reasons, or ask when borderline. |
-| `reply_check` | Stop | Blocks a final reply that gives an effort or time estimate, once; the second stop always passes. |
-| `skill_router` | UserPromptSubmit | Ranks every skill against the turn, re-checks the top three, adds one `<skill_relevance>` line the agent may ignore. |
+| `reply_check` | Stop | Blocks a final reply that gives an effort or time estimate, once; the second stop always passes. Replies that name no duration never reach Jev. |
+| `skill_router` | UserPromptSubmit | Ranks every skill against the turn; answers at once when the ranking is sure, re-checks the top three only when it is not; adds one `<skill_relevance>` line the agent may ignore, once per skill per session. Harness texts (stop-hook feedback, compaction summaries) are skipped. |
 | `doc "<task>"` | CLI | Mechanical, low-risk work the router is confident about goes to `oclaude`; everything else to `claude`. `--dry-run`, `-p`. |
 
 The TypeSafe key lives in hush as `TYPESAFE_API_KEY`; `bin/doc-hook` injects it with
