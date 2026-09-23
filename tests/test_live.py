@@ -74,7 +74,7 @@ class SkillRouter(unittest.TestCase):
 
     def test_cloud_costs_go_to_devo(self):
         self.assertEqual(skill_router.suggest(
-            "Controlla i costi di DigitalOcean del mese scorso per il progetto growfi", SKILLS), "devo")
+            "Controlla i costi di DigitalOcean del mese scorso per il progetto acme", SKILLS), "devo")
 
     def test_general_question_needs_no_skill(self):
         self.assertIsNone(skill_router.suggest(

@@ -49,7 +49,7 @@ class ExactRulesWithoutJev(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_local_path_is_denied(self):
-        decision, reasons = publish_guard.judge("See /Users/zencrust/work/log.txt for details")
+        decision, reasons = publish_guard.judge("See /Users/someone/work/log.txt for details")
         self.assertEqual(decision, "deny")
         self.assertIn("local paths", reasons[0])
 
@@ -60,6 +60,18 @@ class ExactRulesWithoutJev(unittest.TestCase):
     def test_clean_text_passes_when_jev_is_down(self):
         decision, _ = publish_guard.judge("Parser now rejects empty input; covered by a new test.")
         self.assertEqual(decision, "allow")
+
+
+class Outcomes(unittest.TestCase):
+    def test_note_records_the_decision_only(self):
+        from doc import jev
+        log = os.path.join(tempfile.mkdtemp(), "usage.jsonl")
+        with mock.patch.object(jev, "USAGE_LOG", log):
+            jev.note("reply_check", "passed")
+        import json
+        entry = json.loads(open(log).read())
+        self.assertEqual((entry["purpose"], entry["outcome"]), ("reply_check", "passed"))
+        self.assertEqual(set(entry), {"ts", "purpose", "outcome"})
 
 
 if __name__ == "__main__":

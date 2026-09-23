@@ -12,7 +12,9 @@ wired into Claude Code, where ordinary code needs a bit of common sense.
 
 The TypeSafe key lives in hush as `TYPESAFE_API_KEY`; `bin/doc-hook` injects it with
 `hush run --redact`. Without hush or python3 a hook checks nothing and exits 0.
-Every call is logged (tokens, latency, no content) to `~/.cache/doc/usage.jsonl`.
+Every Jev call (tokens, latency) and every decision (`publish_guard: deny`,
+`reply_check: passed`, `skill_router: suggested:devo`, `route: oclaude`) is logged —
+never the text that was judged — to `~/.cache/doc/usage.jsonl`.
 
 ## Install
 

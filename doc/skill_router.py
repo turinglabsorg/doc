@@ -104,6 +104,7 @@ def main():
         name = suggest(prompt, skills)
     except (jev.JevError, KeyError):
         return
+    jev.note("skill_router", "suggested:%s" % name if name else "none")
     if not name:
         return
     print(json.dumps({"hookSpecificOutput": {

@@ -61,6 +61,7 @@ def main():
         value = judge(reply)
     except jev.JevError:
         return
+    jev.note("reply_check", "blocked" if value >= BLOCK_AT else "passed")
     if value >= BLOCK_AT:
         print(json.dumps({
             "decision": "block",

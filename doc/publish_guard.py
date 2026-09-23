@@ -137,6 +137,7 @@ def main():
     if not text or not text.strip():
         return
     decision, reasons = judge(text)
+    jev.note("publish_guard", decision)
     if decision == "allow":
         return
     message = "doc: this comment breaks the publishing rules: " + "; ".join(reasons) + "."

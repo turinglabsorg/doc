@@ -11,7 +11,7 @@ import urllib.request
 
 API = "https://api.typesafe.ai/v1/systemone"
 MODEL = os.environ.get("DOC_JEV_MODEL", "jev-1.13.0")
-USAGE_LOG = os.path.expanduser("~/.cache/doc/usage.jsonl")
+USAGE_LOG = os.path.expanduser(os.environ.get("DOC_USAGE_LOG", "~/.cache/doc/usage.jsonl"))
 
 
 class JevError(Exception):
@@ -52,15 +52,20 @@ def ask(state, questions, timeout=10.0, purpose=""):
 
 
 def _log_usage(purpose, usage, seconds):
+    _append({"ts": int(time.time()), "purpose": purpose,
+             "input_tokens": usage.get("input_tokens"), "ms": int(seconds * 1000)})
+
+
+def note(purpose, outcome):
+    """Record what a check decided — never what it read."""
+    _append({"ts": int(time.time()), "purpose": purpose, "outcome": outcome})
+
+
+def _append(entry):
     try:
         os.makedirs(os.path.dirname(USAGE_LOG), exist_ok=True)
         with open(USAGE_LOG, "a") as log:
-            log.write(json.dumps({
-                "ts": int(time.time()),
-                "purpose": purpose,
-                "input_tokens": usage.get("input_tokens"),
-                "ms": int(seconds * 1000),
-            }) + "\n")
+            log.write(json.dumps(entry) + "\n")
     except OSError:
         pass
 
