@@ -15,15 +15,30 @@ import sys
 
 from doc import jev
 
-SKILL_DIRS = ["~/.claude/skills", "~/.agents/skills"]
 FIT_AT = 0.6
 TOP = 3
 
 
-def load_skills(cwd):
-    roots = [os.path.expanduser(d) for d in SKILL_DIRS]
+def is_codex(payload):
+    # Codex hook payloads carry a turn_id, and its transcripts live under ~/.codex.
+    return "turn_id" in payload or "/.codex/" in (payload.get("transcript_path") or "")
+
+
+def skill_dirs(payload):
+    """Where the agent running this hook keeps its skills: user-level, shared, project."""
+    if is_codex(payload):
+        home = os.environ.get("CODEX_HOME") or "~/.codex"
+        user, local = [os.path.join(home, "skills"), "~/.agents/skills"], [".codex/skills", ".agents/skills"]
+    else:
+        user, local = ["~/.claude/skills", "~/.agents/skills"], [".claude/skills"]
+    roots = [os.path.expanduser(d) for d in user]
+    cwd = payload.get("cwd")
     if cwd:
-        roots.append(os.path.join(cwd, ".claude", "skills"))
+        roots += [os.path.join(cwd, d) for d in local]
+    return roots
+
+
+def load_skills(roots):
     skills = {}
     for root in roots:
         for path in sorted(glob.glob(os.path.join(root, "*", "SKILL.md"))):
@@ -97,7 +112,7 @@ def main():
     prompt = (payload.get("prompt") or "").strip()
     if len(prompt) < 20 or prompt.startswith("/"):
         return
-    skills = load_skills(payload.get("cwd"))
+    skills = load_skills(skill_dirs(payload))
     if not skills:
         return
     try:

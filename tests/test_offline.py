@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import tempfile
 import unittest
@@ -60,6 +62,36 @@ class ExactRulesWithoutJev(unittest.TestCase):
     def test_clean_text_passes_when_jev_is_down(self):
         decision, _ = publish_guard.judge("Parser now rejects empty input; covered by a new test.")
         self.assertEqual(decision, "allow")
+
+
+class BothAgents(unittest.TestCase):
+    def test_reply_from_codex_payload(self):
+        from doc import reply_check
+        seen = {}
+        with mock.patch.object(reply_check, "judge", side_effect=lambda r: seen.setdefault("reply", r) and 0.0):
+            with mock.patch("sys.stdin", io.StringIO(json.dumps({
+                    "hook_event_name": "Stop", "turn_id": "t", "stop_hook_active": False,
+                    "last_assistant_message": "A reply long enough to be judged by the check."}))):
+                reply_check.main()
+        self.assertEqual(seen["reply"], "A reply long enough to be judged by the check.")
+
+    def test_reply_from_claude_transcript(self):
+        from doc import reply_check
+        path = os.path.join(tempfile.mkdtemp(), "t.jsonl")
+        with open(path, "w") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                    "content": [{"type": "text", "text": "Final answer from the transcript."}]}}) + "\n")
+        self.assertEqual(reply_check.last_reply(path), "Final answer from the transcript.")
+
+    def test_skill_dirs_follow_the_agent(self):
+        from doc import skill_router
+        codex = skill_router.skill_dirs({"turn_id": "t", "cwd": "/repo"})
+        claude = skill_router.skill_dirs({"transcript_path": "/x/.claude/projects/p/s.jsonl", "cwd": "/repo"})
+        self.assertTrue(any(d.endswith(".codex/skills") and not d.startswith("/repo") for d in codex))
+        self.assertIn("/repo/.codex/skills", codex)
+        self.assertTrue(any(d.endswith(".claude/skills") and not d.startswith("/repo") for d in claude))
+        self.assertIn("/repo/.claude/skills", claude)
+        self.assertFalse(any(".codex" in d for d in claude))
 
 
 class Outcomes(unittest.TestCase):

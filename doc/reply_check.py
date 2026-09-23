@@ -1,4 +1,6 @@
 """Stop: check the agent's final reply against the chat rules before it stops.
+Works for Claude Code (reply read from the transcript) and Codex (reply in the
+payload as `last_assistant_message`).
 
 The rule: never give effort or time estimates for work. When the last reply
 carries one, the stop is blocked once with the reason, so the agent rewrites
@@ -54,7 +56,8 @@ def main():
     payload = json.load(sys.stdin)
     if payload.get("stop_hook_active"):
         return
-    reply = last_reply(payload.get("transcript_path") or "")
+    # Codex passes the reply itself; Claude Code only points at its transcript.
+    reply = payload.get("last_assistant_message") or last_reply(payload.get("transcript_path") or "")
     if len(reply.strip()) < 40:
         return
     try:

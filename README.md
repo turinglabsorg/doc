@@ -16,9 +16,13 @@ Every Jev call (tokens, latency) and every decision (`publish_guard: deny`,
 `reply_check: passed`, `skill_router: suggested:devo`, `route: oclaude`) is logged —
 never the text that was judged — to `~/.cache/doc/usage.jsonl`.
 
+Works the same in **Claude Code** and **Codex**: both speak the same hook protocol.
+Codex hands `reply_check` the reply itself (`last_assistant_message`) and keeps its
+skills in `~/.codex/skills`; `skill_router` reads the skills of whichever agent calls it.
+
 ## Install
 
-Register the hooks in `~/.claude/settings.json`:
+Register the hooks in `~/.claude/settings.json` and/or `~/.codex/hooks.json`:
 
 ```json
 "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "~/doc/bin/doc-hook publish_guard", "timeout": 20}]}],
@@ -27,6 +31,9 @@ Register the hooks in `~/.claude/settings.json`:
 ```
 
 and link the CLI: `ln -s ~/doc/bin/doc /usr/local/bin/doc`.
+
+Codex runs a hook only once you trust it: on its next start it lists new or
+changed hooks for review, or use `/hooks`.
 
 ## Tests
 
