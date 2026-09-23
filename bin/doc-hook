@@ -16,7 +16,7 @@ payload="$(cat)"
 # side then decides exactly. Wider than doc.publish_guard.PUBLISHING on
 # purpose: a false match only costs one exact check.
 if [ "$hook" = publish_guard ] && ! printf '%s' "$payload" | grep -Eq \
-    'gh([[:space:]]|\\t)+(issue|pr)([[:space:]]|\\t)+(comment|create|edit|review)|gh([[:space:]]|\\t)+api[^|;&]*comment|grog([[:space:]]|\\t)+(answer|create|update)'; then
+    'gh([[:space:]]|\\t)+(issue|pr)([[:space:]]|\\t)+(comment|create|edit|review)|gh([[:space:]]|\\t)+api[^|;&]*comment|grog(/index\.js)?([[:space:]]|\\t)+(answer|create|update)'; then
     exit 0
 fi
 

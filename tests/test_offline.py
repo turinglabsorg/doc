@@ -32,6 +32,11 @@ class ExtractText(unittest.TestCase):
         command = 'gh api repos/o/r/issues/1/comments -f body="via api"'
         self.assertEqual(publish_guard.extract_text(command, self.dir), "via api")
 
+    def test_grog_answer_through_node(self):
+        command = "node ~/.codex/tools/grog/index.js answer https://github.com/acme/app/issues/3 notes.md"
+        self.assertTrue(publish_guard.PUBLISHING.search(command))
+        self.assertEqual(publish_guard.extract_text(command, self.dir), "From a file")
+
     def test_grog_answer_file(self):
         self.assertEqual(publish_guard.extract_text("grog answer https://x/1 notes.md", self.dir), "From a file")
 
@@ -123,7 +128,8 @@ class HookWrapper(unittest.TestCase):
 
     def test_publishing_commands_reach_the_check(self):
         for command in ['gh pr comment 12 --body "Fixed"', 'cd app\ngh issue create --title T --body B',
-                        "gh api repos/acme/app/issues/3/comments -f body=hi", "grog answer https://x y.md"]:
+                        "gh api repos/acme/app/issues/3/comments -f body=hi", "grog answer https://x y.md",
+                        "node ~/.codex/tools/grog/index.js answer https://x y.md"]:
             with self.subTest(command=command):
                 self.assertTrue(self.started_hush("publish_guard", command))
 

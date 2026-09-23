@@ -18,11 +18,13 @@ from doc import jev
 # A publishing command in command position: at the start of a line or after
 # ; & | ( — optionally behind VAR=value assignments or a path — so a mention
 # inside another command's string (a commit message, an echo) is not one.
+# grog also runs as `node <tools>/grog/index.js`, which is how the grog skills
+# call it.
 PUBLISHING = re.compile(
     r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:\S*/)?"
     r"(?:gh\s+(?:issue|pr)\s+(?:comment|create|edit|review)"
     r"|gh\s+api\b[^|;&\n]*\bcomments?\b"
-    r"|grog\s+(?:answer|create|update))\b"
+    r"|(?:node\s+\S*/)?grog(?:/index\.js)?\s+(?:answer|create|update))\b"
 )
 TEXT_FLAGS = {"--body", "-b", "--description"}
 FILE_FLAGS = {"--body-file", "-F", "--description-file"}
@@ -89,8 +91,9 @@ def extract_text(command, cwd):
                 if field_value.startswith("@"):
                     return _read(field_value[1:], cwd)
                 return field_value
-    if len(words) >= 4 and words[0].endswith("grog") and words[1] == "answer":
-        return _read(words[3], cwd)
+    for i, word in enumerate(words[:-2]):
+        if word == "answer" and i and re.search(r"grog(?:/index\.js)?$", words[i - 1]):
+            return _read(words[i + 2], cwd)
     return heredoc.group(2) if heredoc else None
 
 
