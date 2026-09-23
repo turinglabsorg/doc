@@ -1,0 +1,14 @@
+#!/bin/sh
+# Run a doc hook (publish_guard, reply_check, skill_router) with the TypeSafe
+# key injected by hush. Without hush or python3 the hook checks nothing and
+# exits 0: a missing tool never breaks a session.
+hook="$1"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+hush_bin="$(command -v hush 2>/dev/null)"
+[ -n "$hush_bin" ] || { [ -x "$HOME/.local/bin/hush" ] && hush_bin="$HOME/.local/bin/hush"; }
+py="$(command -v python3 2>/dev/null)"
+if [ -z "$hush_bin" ] || [ -z "$py" ]; then
+    cat >/dev/null
+    exit 0
+fi
+PYTHONPATH="$root" exec "$hush_bin" run --name TYPESAFE_API_KEY --env TYPESAFE_API_KEY --redact -- "$py" -m "doc.$hook"
