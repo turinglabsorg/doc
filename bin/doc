@@ -19,11 +19,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 def decide(task):
     hush = shutil.which("hush") or os.path.expanduser("~/.local/bin/hush")
+    # The command after `--` runs wherever hush runs (possibly a container's
+    # host), so it names python3 and carries PYTHONPATH itself.
     command = [hush, "run", "--name", "TYPESAFE_API_KEY", "--env", "TYPESAFE_API_KEY", "--redact",
-               "--", sys.executable, "-m", "doc.route", task]
+               "--", "env", "PYTHONPATH=" + ROOT, "python3", "-m", "doc.route", task]
     try:
-        out = subprocess.run(command, capture_output=True, text=True, timeout=60,
-                             env=dict(os.environ, PYTHONPATH=ROOT)).stdout
+        out = subprocess.run(command, capture_output=True, text=True, timeout=60).stdout
         return json.loads(out.strip().splitlines()[-1])
     except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
         return {"target": "claude", "why": "router unavailable: %s" % error}
