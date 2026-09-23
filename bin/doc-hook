@@ -8,12 +8,21 @@
 # paths): so python3 is looked up there, and PYTHONPATH travels in the command.
 hook="$1"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-hush_bin="$(command -v hush 2>/dev/null)"
-[ -n "$hush_bin" ] || { [ -x "$HOME/.local/bin/hush" ] && hush_bin="$HOME/.local/bin/hush"; }
-if [ -z "$hush_bin" ]; then
-    cat >/dev/null
+payload="$(cat)"
+
+# publish_guard runs before every Bash command, and almost none of them post
+# anything. A text match on the payload tells them apart here, so hush, Python
+# and Jev start only for a command that could publish a comment; the Python
+# side then decides exactly. Wider than doc.publish_guard.PUBLISHING on
+# purpose: a false match only costs one exact check.
+if [ "$hook" = publish_guard ] && ! printf '%s' "$payload" | grep -Eq \
+    'gh([[:space:]]|\\t)+(issue|pr)([[:space:]]|\\t)+(comment|create|edit|review)|gh([[:space:]]|\\t)+api[^|;&]*comment|grog([[:space:]]|\\t)+(answer|create|update)'; then
     exit 0
 fi
-exec "$hush_bin" run --name TYPESAFE_API_KEY --env TYPESAFE_API_KEY --redact -- \
+
+hush_bin="$(command -v hush 2>/dev/null)"
+[ -n "$hush_bin" ] || { [ -x "$HOME/.local/bin/hush" ] && hush_bin="$HOME/.local/bin/hush"; }
+[ -n "$hush_bin" ] || exit 0
+printf '%s' "$payload" | "$hush_bin" run --name TYPESAFE_API_KEY --env TYPESAFE_API_KEY --redact -- \
     env PYTHONPATH="$root" sh -c \
     'command -v python3 >/dev/null || { cat >/dev/null; exit 0; }; exec python3 -m "doc.$0"' "$hook"

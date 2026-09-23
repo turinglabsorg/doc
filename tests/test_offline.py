@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -92,6 +93,42 @@ class BothAgents(unittest.TestCase):
         self.assertTrue(any(d.endswith(".claude/skills") and not d.startswith("/repo") for d in claude))
         self.assertIn("/repo/.claude/skills", claude)
         self.assertFalse(any(".codex" in d for d in claude))
+
+
+class HookWrapper(unittest.TestCase):
+    """bin/doc-hook starts hush (and so Python and Jev) only when it has to."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.mark = os.path.join(self.dir, "called")
+        fake = os.path.join(self.dir, "hush")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\necho called >> "$MARK"\ncat >/dev/null\n')
+        os.chmod(fake, 0o755)
+
+    def started_hush(self, hook, command):
+        if os.path.exists(self.mark):
+            os.remove(self.mark)
+        payload = json.dumps({"tool_input": {"command": command}})
+        env = dict(os.environ, PATH=self.dir + ":/usr/bin:/bin", HOME=self.dir, MARK=self.mark)
+        hook_path = os.path.join(os.path.dirname(__file__), "..", "bin", "doc-hook")
+        subprocess.run([hook_path, hook], input=payload.encode(), env=env, check=True, timeout=10)
+        return os.path.exists(self.mark)
+
+    def test_ordinary_commands_skip_hush(self):
+        for command in ["ls -la", "npm test", "gh api repos/acme/app/pulls", "gh pr view 3",
+                        "gh issue list --state open"]:
+            with self.subTest(command=command):
+                self.assertFalse(self.started_hush("publish_guard", command))
+
+    def test_publishing_commands_reach_the_check(self):
+        for command in ['gh pr comment 12 --body "Fixed"', 'cd app\ngh issue create --title T --body B',
+                        "gh api repos/acme/app/issues/3/comments -f body=hi", "grog answer https://x y.md"]:
+            with self.subTest(command=command):
+                self.assertTrue(self.started_hush("publish_guard", command))
+
+    def test_other_hooks_always_run(self):
+        self.assertTrue(self.started_hush("skill_router", "anything"))
 
 
 class Outcomes(unittest.TestCase):
