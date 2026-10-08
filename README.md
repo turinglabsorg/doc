@@ -1,7 +1,7 @@
 # doc
 
 Scott's sidekick: small, fast, typed judgments from [TypeSafe's Jev](https://docs.typesafe.ai)
-wired into Claude Code, Codex and Grok, where ordinary code needs a bit of common sense.
+wired into Claude Code, Codex, Grok and Hermes, where ordinary code needs a bit of common sense.
 
 | Part | Hook / command | What it does |
 |---|---|---|
@@ -18,13 +18,19 @@ Every Jev call (tokens, latency) and every decision (`publish_guard: deny`,
 (`"scores": {"local_state": 0.98, ...}`), so thresholds can be tuned on real traffic —
 never the text that was judged.
 
-Works the same in **Claude Code**, **Codex** and **Grok**. Codex hands `reply_check` the
+Works the same in **Claude Code**, **Codex**, **Grok** and **Hermes**. Codex hands `reply_check` the
 reply itself (`last_assistant_message`) and keeps its skills in `~/.codex/skills`;
 `skill_router` reads the skills of whichever agent calls it. Grok runs the hooks it
 finds in `~/.claude/settings.json` with a camelCase payload (`toolInput`,
 `lastAssistantMessage`, `stopHookActive`), which `doc/event.py` reads into the same
 shape; it also fires an observe-only Stop at session end, which is skipped, and it
 discards what a UserPromptSubmit hook adds, so `skill_router` doesn't run there.
+Hermes runs the hooks listed in its own `~/.hermes/config.yaml`, under its event names
+(`pre_tool_call`, `pre_llm_call`, `pre_verify`), with the prompt and the reply under
+`extra`, and reads back `{"decision": "block"}`, `{"action": "approve"}` and
+`{"context": ...}` instead of `hookSpecificOutput`: `doc/event.py` reads and answers in
+its shape. Its `pre_verify` fires only on turns that edited files, so there
+`reply_check` checks those replies only.
 
 ## Install
 
@@ -38,8 +44,22 @@ Register the hooks in `~/.claude/settings.json` and/or `~/.codex/hooks.json`:
 
 and link the CLI: `ln -s ~/doc/bin/doc /usr/local/bin/doc`.
 
+For Hermes, in `~/.hermes/config.yaml` (its shell tool is `terminal`, and commands run
+without a shell):
+
+```yaml
+hooks:
+  pre_tool_call:
+    - {matcher: terminal, command: ~/doc/bin/doc-hook publish_guard, timeout: 20}
+  pre_llm_call:
+    - {command: ~/doc/bin/doc-hook skill_router, timeout: 20}
+  pre_verify:
+    - {command: ~/doc/bin/doc-hook reply_check, timeout: 20}
+```
+
 Codex runs a hook only once you trust it: on its next start it lists new or
-changed hooks for review, or use `/hooks`. Grok needs nothing: it reads the Claude
+changed hooks for review, or use `/hooks`. Hermes asks once per hook at its first
+interactive start (or `hermes --accept-hooks`). Grok needs nothing: it reads the Claude
 Code settings unless `[compat.claude] hooks = false` is set in `~/.grok/config.toml`.
 
 `DOC_USAGE_LOG`, `DOC_SKILL_SEEN_DIR` and `DOC_JEV_MODEL` override the defaults;

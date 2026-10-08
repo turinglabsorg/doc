@@ -159,6 +159,10 @@ class HookWrapper(unittest.TestCase):
         self.assertIsNotNone(self.hush_args("skill_router", {"session_id": "s", "hook_event_name": "UserPromptSubmit",
                                                              "prompt": 'explain "hookEventName" in grok'}))
 
+    def test_hermes_prompts_reach_the_router(self):
+        payload = {"hook_event_name": "pre_llm_call", "session_id": "h", "extra": {"user_message": "check costs"}}
+        self.assertIsNotNone(self.hush_args("skill_router", payload))
+
     def test_doc_settings_cross_hush(self):
         args = self.hush_args("reply_check", {"session_id": "s"}, DOC_USAGE_LOG="/x/usage log.jsonl",
                               DOC_JEV_MODEL="jev-test")
@@ -291,6 +295,70 @@ class Grok(unittest.TestCase):
                    "sessionId": "g", "prompt": "check the cloud costs of last month for acme"}
         with mock.patch.object(skill_router, "suggest", side_effect=AssertionError("asked Jev")):
             self.assertEqual(self.run_main(skill_router, payload), "")
+
+
+class Hermes(unittest.TestCase):
+    """Hermes runs the hooks in ~/.hermes/config.yaml with its own events and answers."""
+
+    def run_main(self, module, payload):
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            module.main()
+        return out.getvalue()
+
+    def payload(self, event, **extra):
+        return {"hook_event_name": event, "tool_name": None, "tool_input": None, "session_id": "h1",
+                "cwd": "/repo", "profile": "default", "extra": extra}
+
+    def test_payload_is_read_in_one_shape(self):
+        from doc import event
+        read = lambda p: event.read(io.StringIO(json.dumps(p)))
+        prompt = read(self.payload("pre_llm_call", user_message="check the cloud costs", is_first_turn=True))
+        self.assertEqual((prompt["agent"], prompt["prompt"]), ("hermes", "check the cloud costs"))
+        stop = read(self.payload("pre_verify", final_response="Done.", attempt=0))
+        self.assertEqual((stop["last_assistant_message"], stop["stop_hook_active"]), ("Done.", False))
+        self.assertTrue(read(self.payload("pre_verify", final_response="Done.", attempt=1))["stop_hook_active"])
+
+    def test_publish_guard_answers_in_hermes_shape(self):
+        payload = dict(self.payload("pre_tool_call"), tool_name="terminal",
+                       tool_input={"command": 'gh pr comment 3 --body "See /Users/me/x.log"'})
+        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": ""}), \
+                mock.patch.object(publish_guard.jev, "note") as note:
+            out = json.loads(self.run_main(publish_guard, payload))
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("local paths", out["reason"])
+        self.assertEqual(note.call_args[0][2], "hermes")
+        with mock.patch.object(publish_guard, "judge", return_value=("ask", ["borderline"], {})), \
+                mock.patch.object(publish_guard.jev, "note"):
+            out = json.loads(self.run_main(publish_guard, payload))
+        self.assertEqual(out["action"], "approve")
+        self.assertIn("borderline", out["message"])
+
+    def test_skill_router_answers_with_context(self):
+        from doc import skill_router
+        seen = tempfile.mkdtemp()
+        with mock.patch.object(skill_router, "SEEN_DIR", seen), \
+                mock.patch.object(skill_router, "load_skills", return_value=Economy.SKILLS), \
+                mock.patch.object(skill_router, "suggest", return_value=("devo", {})) as suggest, \
+                mock.patch.object(skill_router.jev, "note"):
+            out = json.loads(self.run_main(skill_router, self.payload(
+                "pre_llm_call", user_message="check the cloud costs of last month for acme")))
+        self.assertEqual(suggest.call_args[0][0], "check the cloud costs of last month for acme")
+        self.assertIn("devo", out["context"])
+        self.assertEqual(set(out), {"context"})
+        dirs = skill_router.skill_dirs(self.payload("pre_llm_call"))
+        self.assertTrue(any(d.endswith(".hermes/skills") and not d.startswith("/repo") for d in dirs))
+        self.assertIn("/repo/.agents/skills", dirs)
+
+    def test_reply_check_keeps_hermes_working(self):
+        from doc import reply_check
+        reply = "Ci vorranno circa tre giorni di sviluppo per finire la migrazione del database."
+        with mock.patch.object(reply_check, "judge", return_value={"effort": 0.95}), \
+                mock.patch.object(reply_check.jev, "note"):
+            out = json.loads(self.run_main(reply_check, self.payload("pre_verify", final_response=reply, attempt=0)))
+        self.assertEqual(out["decision"], "block")
+        with mock.patch.object(reply_check, "judge", side_effect=AssertionError("asked Jev")):
+            self.assertEqual(self.run_main(reply_check, self.payload("pre_verify", final_response=reply, attempt=1)), "")
 
 
 class SecretRequests(unittest.TestCase):

@@ -40,9 +40,14 @@ SEEN_DIR = os.path.expanduser(os.environ.get("DOC_SKILL_SEEN_DIR", "~/.cache/doc
 
 def skill_dirs(payload):
     """Where the agent running this hook keeps its skills: user-level, shared, project."""
-    if event.agent(payload) == "codex":
+    agent = event.agent(payload)
+    if agent == "codex":
         home = os.environ.get("CODEX_HOME") or "~/.codex"
         user, local = [os.path.join(home, "skills"), "~/.agents/skills"], [".codex/skills", ".agents/skills"]
+    elif agent == "hermes":
+        # Hermes' own top-level skills (its bundled ones sit a level deeper, by
+        # category) and the shared ones listed in its `skills.external_dirs`.
+        user, local = ["~/.hermes/skills", "~/.agents/skills"], [".hermes/skills", ".agents/skills"]
     else:
         user, local = ["~/.claude/skills", "~/.agents/skills"], [".claude/skills"]
     roots = [os.path.expanduser(d) for d in user]
@@ -177,11 +182,9 @@ def main():
     if not name:
         return
     remember(payload, name)
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "UserPromptSubmit",
-        "additionalContext": "<skill_relevance>\nRelevant to the current request: %s. Ignore this "
-                             "if it does not fit what the user actually asked for.\n</skill_relevance>" % name,
-    }}))
+    print(json.dumps(event.context(payload, "UserPromptSubmit",
+                                   "<skill_relevance>\nRelevant to the current request: %s. Ignore this "
+                                   "if it does not fit what the user actually asked for.\n</skill_relevance>" % name)))
 
 
 if __name__ == "__main__":

@@ -146,11 +146,7 @@ def main():
     message = "doc: this comment breaks the publishing rules: " + "; ".join(reasons) + "."
     if decision == "deny":
         message += " Rewrite it to report only impact, root cause, behavior, verified results and remote links."
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": decision,
-        "permissionDecisionReason": message,
-    }}))
+    print(json.dumps(event.permission(payload, decision, message)))
 
 
 if __name__ == "__main__":
