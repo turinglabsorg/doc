@@ -40,6 +40,15 @@ class ExtractText(unittest.TestCase):
     def test_grog_answer_file(self):
         self.assertEqual(publish_guard.extract_text("grog answer https://x/1 notes.md", self.dir), "From a file")
 
+    def test_heredoc_bodies_are_not_commands(self):
+        writing = "cat > notes/SKILL.md <<'EOF'\nRun:\n   node ~/.claude/tools/grog/index.js answer <url> f.md\n   gh pr comment 3 --body x\nEOF\n"
+        self.assertFalse(publish_guard.PUBLISHING.search(publish_guard.without_heredoc_bodies(writing)))
+        posting = "gh pr comment 5 --body-file - <<'EOF'\nline one\nEOF\n"
+        self.assertTrue(publish_guard.PUBLISHING.search(publish_guard.without_heredoc_bodies(posting)))
+        self.assertEqual(publish_guard.extract_text(posting, self.dir), "line one")
+        after = "cat > f.md <<'EOF'\nbody\nEOF\ngh pr comment 1 --body-file f.md\n"
+        self.assertTrue(publish_guard.PUBLISHING.search(publish_guard.without_heredoc_bodies(after)))
+
     def test_only_publishing_commands_match(self):
         self.assertTrue(publish_guard.PUBLISHING.search("gh pr create --title t --body b"))
         self.assertTrue(publish_guard.PUBLISHING.search("grog answer https://x f.md"))

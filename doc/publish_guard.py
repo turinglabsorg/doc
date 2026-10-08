@@ -67,6 +67,12 @@ REASONS = {
 }
 
 
+def without_heredoc_bodies(command):
+    """The command with every heredoc body taken out: text fed to a command on stdin
+    (a file being written, a script) is not a command, whatever it says."""
+    return HEREDOC.sub(lambda m: m.group(0)[:m.start(2) - m.start(0)], command)
+
+
 def extract_text(command, cwd):
     """Return the text a publishing command would post, or None if unknown."""
     heredoc = HEREDOC.search(command)
@@ -134,7 +140,7 @@ def judge(text):
 def main():
     payload = event.read()
     command = (payload.get("tool_input") or {}).get("command") or ""
-    if not PUBLISHING.search(command):
+    if not PUBLISHING.search(without_heredoc_bodies(command)):
         return
     text = extract_text(command, payload.get("cwd"))
     if not text or not text.strip():
