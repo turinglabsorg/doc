@@ -57,16 +57,16 @@ class ExactRulesWithoutJev(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_local_path_is_denied(self):
-        decision, reasons = publish_guard.judge("See /Users/someone/work/log.txt for details")
+        decision, reasons, _ = publish_guard.judge("See /Users/someone/work/log.txt for details")
         self.assertEqual(decision, "deny")
         self.assertIn("local paths", reasons[0])
 
     def test_attribution_is_denied(self):
-        decision, _ = publish_guard.judge("Done.\n\nCo-Authored-By: Someone <x@y.z>")
+        decision, _, _ = publish_guard.judge("Done.\n\nCo-Authored-By: Someone <x@y.z>")
         self.assertEqual(decision, "deny")
 
     def test_clean_text_passes_when_jev_is_down(self):
-        decision, _ = publish_guard.judge("Parser now rejects empty input; covered by a new test.")
+        decision, _, _ = publish_guard.judge("Parser now rejects empty input; covered by a new test.")
         self.assertEqual(decision, "allow")
 
 
@@ -75,7 +75,8 @@ class BothAgents(unittest.TestCase):
         from doc import reply_check
         seen = {}
         reply = "A reply long enough to be judged: this takes about 2 days of work."
-        with mock.patch.object(reply_check, "judge", side_effect=lambda r: seen.setdefault("reply", r) and 0.0), \
+        with mock.patch.object(reply_check, "judge",
+                               side_effect=lambda r, rules: seen.setdefault("reply", r) and {"effort": 0.0}), \
                 mock.patch.object(reply_check.jev, "note"):
             with mock.patch("sys.stdin", io.StringIO(json.dumps({
                     "hook_event_name": "Stop", "turn_id": "t", "stop_hook_active": False,
@@ -110,17 +111,24 @@ class HookWrapper(unittest.TestCase):
         self.mark = os.path.join(self.dir, "called")
         fake = os.path.join(self.dir, "hush")
         with open(fake, "w") as f:
-            f.write('#!/bin/sh\necho called >> "$MARK"\ncat >/dev/null\n')
+            f.write('#!/bin/sh\nprintf "%s\\n" "$@" >> "$MARK"\ncat >/dev/null\n')
         os.chmod(fake, 0o755)
 
-    def started_hush(self, hook, command):
+    def hush_args(self, hook, payload, **env):
+        """The arguments hush was started with, or None if it was not."""
         if os.path.exists(self.mark):
             os.remove(self.mark)
-        payload = json.dumps({"tool_input": {"command": command}})
-        env = dict(os.environ, PATH=self.dir + ":/usr/bin:/bin", HOME=self.dir, MARK=self.mark)
+        env = dict({k: v for k, v in os.environ.items() if not k.startswith("DOC_")},
+                   PATH=self.dir + ":/usr/bin:/bin", HOME=self.dir, MARK=self.mark, **env)
         hook_path = os.path.join(os.path.dirname(__file__), "..", "bin", "doc-hook")
-        subprocess.run([hook_path, hook], input=payload.encode(), env=env, check=True, timeout=10)
-        return os.path.exists(self.mark)
+        subprocess.run([hook_path, hook], input=json.dumps(payload).encode(), env=env, check=True, timeout=10)
+        if not os.path.exists(self.mark):
+            return None
+        with open(self.mark) as f:
+            return f.read().splitlines()
+
+    def started_hush(self, hook, command):
+        return self.hush_args(hook, {"tool_input": {"command": command}}) is not None
 
     def test_ordinary_commands_skip_hush(self):
         for command in ["ls -la", "npm test", "gh api repos/acme/app/pulls", "gh pr view 3",
@@ -138,6 +146,27 @@ class HookWrapper(unittest.TestCase):
     def test_other_hooks_always_run(self):
         self.assertTrue(self.started_hush("skill_router", "anything"))
 
+    def test_grok_publishing_command_reaches_the_check(self):
+        payload = {"hookEventName": "pre_tool_use", "hook_event_name": "PreToolUse", "sessionId": "s",
+                   "toolName": "run_terminal_command", "toolInput": {"command": 'gh pr comment 3 --body "x"'}}
+        self.assertIsNotNone(self.hush_args("publish_guard", payload))
+
+    def test_grok_prompts_skip_the_router(self):
+        payload = {"hookEventName": "user_prompt_submit", "hook_event_name": "UserPromptSubmit",
+                   "sessionId": "s", "prompt": "check the cloud costs for last month please"}
+        self.assertIsNone(self.hush_args("skill_router", payload))
+        self.assertIsNone(self.hush_args("skill_router", dict(payload, prompt="explain \"hookEventName\" in grok")))
+        self.assertIsNotNone(self.hush_args("skill_router", {"session_id": "s", "hook_event_name": "UserPromptSubmit",
+                                                             "prompt": 'explain "hookEventName" in grok'}))
+
+    def test_doc_settings_cross_hush(self):
+        args = self.hush_args("reply_check", {"session_id": "s"}, DOC_USAGE_LOG="/x/usage log.jsonl",
+                              DOC_JEV_MODEL="jev-test")
+        self.assertIn("DOC_USAGE_LOG=/x/usage log.jsonl", args)
+        self.assertIn("DOC_JEV_MODEL=jev-test", args)
+        self.assertFalse(any(a.startswith("DOC_SKILL_SEEN_DIR") for a in args))
+        self.assertEqual(args[args.index("--") + 1], "env")
+
 
 def _rank(probabilities, needs):
     return {"best": {"choice": max(probabilities, key=probabilities.get), "probabilities": probabilities,
@@ -152,21 +181,28 @@ class Economy(unittest.TestCase):
     def test_confident_ranking_answers_with_one_request(self):
         from doc import skill_router
         with mock.patch.object(skill_router.jev, "ask", side_effect=[_rank({"hush": 0.9, "devo": 0.05, "none": 0.05}, 0.9)]) as ask:
-            self.assertEqual(skill_router.suggest("put the master keys in hush", self.SKILLS), "hush")
+            self.assertEqual(skill_router.suggest("put the master keys in hush", self.SKILLS)[0], "hush")
         self.assertEqual(ask.call_count, 1)
 
     def test_unsure_ranking_is_verified(self):
         from doc import skill_router
         answers = [_rank({"devo": 0.6, "hush": 0.2, "none": 0.2}, 0.7), {"fit_0": {"noul": 0.8}, "fit_1": {"noul": 0.1}, "fit_2": {"noul": 0.0}}]
         with mock.patch.object(skill_router.jev, "ask", side_effect=answers) as ask:
-            self.assertEqual(skill_router.suggest("did the cloud logins break?", self.SKILLS), "devo")
+            self.assertEqual(skill_router.suggest("did the cloud logins break?", self.SKILLS)[0], "devo")
         self.assertEqual(ask.call_count, 2)
 
     def test_weak_ranking_stops_after_one_request(self):
         from doc import skill_router
         with mock.patch.object(skill_router.jev, "ask", side_effect=[_rank({"devo": 0.2, "none": 0.8}, 0.6)]) as ask:
-            self.assertIsNone(skill_router.suggest("are we done yet?", self.SKILLS))
+            self.assertIsNone(skill_router.suggest("are we done yet?", self.SKILLS)[0])
         self.assertEqual(ask.call_count, 1)
+
+    def test_a_top_skill_already_suggested_needs_no_verify(self):
+        from doc import skill_router
+        with mock.patch.object(skill_router.jev, "ask", side_effect=[_rank({"devo": 0.6, "hush": 0.2, "none": 0.2}, 0.7)]) as ask:
+            name, scores = skill_router.suggest("and the logs of that service?", self.SKILLS, seen={"devo"})
+        self.assertEqual((name, ask.call_count), ("devo", 1))
+        self.assertEqual(scores, {"needs": 0.7, "top": 0.6})
 
     def test_harness_texts_never_reach_jev(self):
         from doc import skill_router
@@ -183,7 +219,7 @@ class Economy(unittest.TestCase):
         for _ in range(2):
             with mock.patch.object(skill_router, "SEEN_DIR", seen), \
                     mock.patch.object(skill_router, "load_skills", return_value=self.SKILLS), \
-                    mock.patch.object(skill_router, "suggest", return_value="hush"), \
+                    mock.patch.object(skill_router, "suggest", return_value=("hush", {})), \
                     mock.patch.object(skill_router.jev, "note"), \
                     mock.patch("sys.stdin", io.StringIO(json.dumps({"prompt": "here is the key for the service", "session_id": "abc"}))), \
                     mock.patch("sys.stdout", new_callable=io.StringIO) as out:
@@ -206,6 +242,87 @@ class Economy(unittest.TestCase):
             self.assertIsNotNone(reply_check.DURATION.search(reply), reply)
 
 
+class Grok(unittest.TestCase):
+    """Grok runs the Claude Code hooks with a camelCase payload."""
+
+    def run_main(self, module, payload):
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            module.main()
+        return out.getvalue()
+
+    def test_payload_is_read_in_one_shape(self):
+        from doc import event
+        payload = event.read(io.StringIO(json.dumps({"hookEventName": "stop", "hook_event_name": "Stop",
+                                                     "sessionId": "g1", "stopHookActive": True,
+                                                     "lastAssistantMessage": "done"})))
+        self.assertEqual((payload["agent"], payload["session_id"], payload["stop_hook_active"],
+                          payload["last_assistant_message"]), ("grok", "g1", True, "done"))
+        self.assertEqual(event.agent({"turn_id": "t"}), "codex")
+        self.assertEqual(event.agent({"session_id": "c", "transcript_path": "/x/.claude/p.jsonl"}), "claude")
+
+    def test_publish_guard_checks_grok_commands(self):
+        payload = {"hookEventName": "pre_tool_use", "hook_event_name": "PreToolUse", "sessionId": "g",
+                   "toolName": "run_terminal_command",
+                   "toolInput": {"command": 'gh pr comment 3 --body "See /Users/me/x.log"'}}
+        with mock.patch.dict(os.environ, {"TYPESAFE_API_KEY": ""}), \
+                mock.patch.object(publish_guard.jev, "note") as note:
+            out = json.loads(self.run_main(publish_guard, payload))
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(note.call_args[0][:3], ("publish_guard", "deny", "grok"))
+
+    def test_reply_check_reads_grok_reply(self):
+        from doc import reply_check
+        reply = "Ci vorranno circa tre giorni di sviluppo per finire la migrazione del database."
+        payload = {"hookEventName": "stop", "hook_event_name": "Stop", "sessionId": "g", "reason": "end_turn",
+                   "stopHookActive": False, "lastAssistantMessage": reply}
+        with mock.patch.object(reply_check, "judge", return_value={"effort": 0.95}) as judge, \
+                mock.patch.object(reply_check.jev, "note"):
+            out = json.loads(self.run_main(reply_check, payload))
+        self.assertEqual(judge.call_args[0], (reply, ["effort"]))
+        self.assertEqual(out["decision"], "block")
+        for extra in ({"stopHookActive": True}, {"reason": "shutdown"}, {"reason": "channel_closed"}):
+            with mock.patch.object(reply_check, "judge", side_effect=AssertionError("asked Jev")):
+                self.assertEqual(self.run_main(reply_check, dict(payload, **extra)), "")
+
+    def test_skill_router_never_asks_under_grok(self):
+        from doc import skill_router
+        payload = {"hookEventName": "user_prompt_submit", "hook_event_name": "UserPromptSubmit",
+                   "sessionId": "g", "prompt": "check the cloud costs of last month for acme"}
+        with mock.patch.object(skill_router, "suggest", side_effect=AssertionError("asked Jev")):
+            self.assertEqual(self.run_main(skill_router, payload), "")
+
+
+class SecretRequests(unittest.TestCase):
+    def test_replies_naming_a_secret_reach_jev(self):
+        from doc import reply_check
+        for reply in ["Incollami qui il token di GitHub e procedo.", "Please paste your API key in the chat.",
+                      "Qual è la password del database?", "Mandami la chiave API di Stripe.",
+                      "I need the access key for the bucket."]:
+            self.assertEqual(reply_check.rules_for(reply), ["secret_request"], reply)
+
+    def test_ordinary_replies_skip_jev(self):
+        from doc import reply_check
+        for reply in ["Il punto chiave è la cache: ora i test passano.", "The parser now rejects empty input."]:
+            self.assertEqual(reply_check.rules_for(reply), [], reply)
+
+    def test_both_rules_go_in_one_request(self):
+        from doc import reply_check
+        reply = "Mandami il token in chat e in due giorni di lavoro chiudiamo la migrazione."
+        with mock.patch.object(reply_check.jev, "ask", return_value={"effort": {"noul": 0.9},
+                                                                     "secret_request": {"noul": 0.95}}) as ask, \
+                mock.patch.object(reply_check.jev, "note") as note, \
+                mock.patch("sys.stdin", io.StringIO(json.dumps({"session_id": "c", "last_assistant_message": reply}))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            reply_check.main()
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(set(ask.call_args[0][1]), {"effort", "secret_request"})
+        reason = json.loads(out.getvalue())["reason"]
+        self.assertIn("effort or time estimate", reason)
+        self.assertIn("hush", reason)
+        self.assertEqual(note.call_args[0][3], {"effort": 0.9, "secret_request": 0.95})
+
+
 class Outcomes(unittest.TestCase):
     def test_note_records_the_decision_only(self):
         from doc import jev
@@ -216,6 +333,15 @@ class Outcomes(unittest.TestCase):
         entry = json.loads(open(log).read())
         self.assertEqual((entry["purpose"], entry["outcome"]), ("reply_check", "passed"))
         self.assertEqual(set(entry), {"ts", "purpose", "outcome"})
+
+    def test_note_records_agent_and_scores_but_no_text(self):
+        from doc import jev
+        log = os.path.join(tempfile.mkdtemp(), "usage.jsonl")
+        with mock.patch.object(jev, "USAGE_LOG", log):
+            jev.note("publish_guard", "ask", "grok", {"effort": 0.61234, "comment": "some text", "flag": True})
+        entry = json.loads(open(log).read())
+        self.assertEqual(entry["agent"], "grok")
+        self.assertEqual(entry["scores"], {"effort": 0.612})
 
 
 if __name__ == "__main__":

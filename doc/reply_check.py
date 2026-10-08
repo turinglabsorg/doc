@@ -1,21 +1,23 @@
 """Stop: check the agent's final reply against the chat rules before it stops.
-Works for Claude Code (reply read from the transcript) and Codex (reply in the
-payload as `last_assistant_message`).
+Works for Claude Code (reply read from the transcript), Codex and Grok (reply in
+the payload as `last_assistant_message` / `lastAssistantMessage`).
 
-The rule: never give effort or time estimates for work. When the last reply
-carries one, the stop is blocked once with the reason, so the agent rewrites
-it; a second stop in the same chain always passes, so this cannot loop.
+The rules: never give effort or time estimates for work, and never ask the user
+to paste a secret into the chat (secrets travel through hush). When the last
+reply breaks one, the stop is blocked once with the reasons, so the agent
+rewrites it; a second stop in the same chain always passes, so this cannot loop.
 
-Most replies name no duration at all, and those never reach Jev: a text match
-on durations and estimate words decides that first (on 846 real replies of a
-day, 11% matched). Jev then tells an effort estimate apart from a process time.
+Each rule has a text match that decides first whether Jev is asked at all: most
+replies name no duration and no secret. On 1,202 real replies of two weeks
+(2026-10-08), 20% named a duration and 14% a secret. Jev then tells an effort
+estimate apart from a process time, and a request for a secret value apart from
+a mention of a secret's name or of hush.
 """
 
 import json
 import re
-import sys
 
-from doc import jev
+from doc import event, jev
 
 BLOCK_AT = 0.8
 
@@ -28,16 +30,39 @@ DURATION = re.compile(
     r"|mezza giornata|mezz'ora|half an? (?:hour|day)|\bstim[ae]\b|\bstimat[oi]\b|\bestimat\w*|\beffort\b",
     re.IGNORECASE,
 )
+SECRET = re.compile(
+    r"\b(?:api[ _-]?keys?|access[ _-]?keys?|private[ _-]?keys?|tokens?|passwords?|passwd|passphrase|"
+    r"secrets?|segret[oi]|credentials?|credenzial[ei]|chiav[ei] (?:api|segret[ae]|di accesso|privat[ae])|"
+    r"bearer)\b",
+    re.IGNORECASE,
+)
 
-QUESTION = {
-    "effort": jev.noul(
-        "Does `reply` estimate how much work, time or effort a task will take or took, such "
-        "as hours or days of development, how long it will take to build something, or "
-        "complexity expressed as time?",
-        yes="A work-effort estimate for a person or an agent appears",
-        no="No work-effort estimate. How long a running process takes (a build, a download, "
-           "a timeout, an uptime) and calendar dates are not effort estimates",
-    ),
+RULES = {
+    "effort": {
+        "match": DURATION,
+        "question": jev.noul(
+            "Does `reply` estimate how much work, time or effort a task will take or took, such "
+            "as hours or days of development, how long it will take to build something, or "
+            "complexity expressed as time?",
+            yes="A work-effort estimate for a person or an agent appears",
+            no="No work-effort estimate. How long a running process takes (a build, a download, "
+               "a timeout, an uptime) and calendar dates are not effort estimates",
+        ),
+        "reason": "gives an effort or time estimate for work",
+        "fix": "Rewrite it without any estimate.",
+    },
+    "secret_request": {
+        "match": SECRET,
+        "question": jev.noul(
+            "Does `reply` ask the user to paste, type or send the value of a secret (an API key, "
+            "token, password or credential) directly into this chat?",
+            yes="The user is asked to put a secret value into the chat itself",
+            no="No secret value is requested in chat. Asking to store or send it through hush or a "
+               "Bitwarden Send, or naming a secret without asking for its value, does not count",
+        ),
+        "reason": "asks the user to paste a secret into the chat",
+        "fix": "Ask them to send it through hush instead (a Bitwarden Send), never in chat.",
+    },
 }
 
 
@@ -62,32 +87,46 @@ def last_reply(transcript_path):
     return text
 
 
-def judge(reply):
-    answers = jev.ask({"reply": reply[:20000]}, QUESTION, purpose="reply_check")
-    return answers["effort"]["noul"]
+def rules_for(reply):
+    """The rules whose text match fires on `reply`: only these reach Jev."""
+    return [name for name, rule in RULES.items() if rule["match"].search(reply)]
+
+
+def judge(reply, rules=None):
+    """Jev's score for each of `rules` (all of them when None), in one request."""
+    rules = rules or list(RULES)
+    answers = jev.ask({"reply": reply[:20000]}, {name: RULES[name]["question"] for name in rules},
+                      purpose="reply_check")
+    return {name: answers[name]["noul"] for name in rules}
 
 
 def main():
-    payload = json.load(sys.stdin)
+    payload = event.read()
     if payload.get("stop_hook_active"):
         return
-    # Codex passes the reply itself; Claude Code only points at its transcript.
+    # Grok also fires an observe-only Stop when the session closes.
+    if payload["agent"] == "grok" and payload.get("reason") not in (None, "end_turn"):
+        return
+    # Codex and Grok pass the reply itself; Claude Code only points at its transcript.
     reply = payload.get("last_assistant_message") or last_reply(payload.get("transcript_path") or "")
     if len(reply.strip()) < 40:
         return
-    if not DURATION.search(reply):
-        jev.note("reply_check", "skipped")
+    rules = rules_for(reply)
+    if not rules:
+        jev.note("reply_check", "skipped", payload["agent"])
         return
     try:
-        value = judge(reply)
+        scores = judge(reply, rules)
     except jev.JevError:
         return
-    jev.note("reply_check", "blocked" if value >= BLOCK_AT else "passed")
-    if value >= BLOCK_AT:
+    broken = [name for name in rules if scores[name] >= BLOCK_AT]
+    jev.note("reply_check", "blocked" if broken else "passed", payload["agent"], scores)
+    if broken:
         print(json.dumps({
             "decision": "block",
-            "reason": "doc: your last reply gives an effort or time estimate for work (%.2f), "
-                      "which the user's rules forbid. Rewrite it without any estimate." % value,
+            "reason": "doc: your last reply %s, which the user's rules forbid. %s" % (
+                " and ".join("%s (%.2f)" % (RULES[name]["reason"], scores[name]) for name in broken),
+                " ".join(RULES[name]["fix"] for name in broken)),
         }))
 
 

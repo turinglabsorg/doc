@@ -5,10 +5,18 @@
 #
 # Everything after `--` runs wherever hush runs, which may be another machine
 # than this script (a container forwarding hush to its host shares only the
-# paths): so python3 is looked up there, and PYTHONPATH travels in the command.
+# paths), and inherits only the key: so python3 is looked up there, and
+# PYTHONPATH and any DOC_* setting travel in the command.
 hook="$1"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 payload="$(cat)"
+
+# Grok runs the hooks in ~/.claude/settings.json too (its payload carries the
+# camelCase `hookEventName`), but discards what a UserPromptSubmit hook adds:
+# a suggestion there would only cost a Jev request.
+if [ "$hook" = skill_router ] && printf '%s' "$payload" | grep -q '"hookEventName"'; then
+    exit 0
+fi
 
 # publish_guard runs before every Bash command, and almost none of them post
 # anything. A text match on the payload tells them apart here, so hush, Python
@@ -23,6 +31,11 @@ fi
 hush_bin="$(command -v hush 2>/dev/null)"
 [ -n "$hush_bin" ] || { [ -x "$HOME/.local/bin/hush" ] && hush_bin="$HOME/.local/bin/hush"; }
 [ -n "$hush_bin" ] || exit 0
+set -- PYTHONPATH="$root"
+for name in DOC_USAGE_LOG DOC_SKILL_SEEN_DIR DOC_JEV_MODEL; do
+    eval "value=\${$name-}"
+    [ -n "$value" ] && set -- "$@" "$name=$value"
+done
 printf '%s' "$payload" | "$hush_bin" run --name TYPESAFE_API_KEY --env TYPESAFE_API_KEY --redact -- \
-    env PYTHONPATH="$root" sh -c \
+    env "$@" sh -c \
     'command -v python3 >/dev/null || { cat >/dev/null; exit 0; }; exec python3 -m "doc.$0"' "$hook"

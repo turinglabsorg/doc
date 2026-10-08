@@ -56,9 +56,17 @@ def _log_usage(purpose, usage, seconds):
              "input_tokens": usage.get("input_tokens"), "ms": int(seconds * 1000)})
 
 
-def note(purpose, outcome):
-    """Record what a check decided — never what it read."""
-    _append({"ts": int(time.time()), "purpose": purpose, "outcome": outcome})
+def note(purpose, outcome, agent=None, scores=None):
+    """Record what a check decided, for which agent, and the Jev scores behind
+    it, so thresholds can be tuned on real traffic — never what it read."""
+    entry = {"ts": int(time.time()), "purpose": purpose, "outcome": outcome}
+    if agent:
+        entry["agent"] = agent
+    numbers = {key: round(value, 3) for key, value in (scores or {}).items()
+               if isinstance(value, (int, float)) and not isinstance(value, bool)}
+    if numbers:
+        entry["scores"] = numbers
+    _append(entry)
 
 
 def _append(entry):

@@ -15,14 +15,17 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+PASSED = ("DOC_USAGE_LOG", "DOC_JEV_MODEL")
 
 
 def decide(task):
     hush = shutil.which("hush") or os.path.expanduser("~/.local/bin/hush")
     # The command after `--` runs wherever hush runs (possibly a container's
-    # host), so it names python3 and carries PYTHONPATH itself.
+    # host) and inherits only the key, so it names python3 and carries
+    # PYTHONPATH and any DOC_* setting itself.
+    settings = ["%s=%s" % (name, os.environ[name]) for name in PASSED if os.environ.get(name)]
     command = [hush, "run", "--name", "TYPESAFE_API_KEY", "--env", "TYPESAFE_API_KEY", "--redact",
-               "--", "env", "PYTHONPATH=" + ROOT, "python3", "-m", "doc.route", task]
+               "--", "env", "PYTHONPATH=" + ROOT] + settings + ["python3", "-m", "doc.route", task]
     try:
         out = subprocess.run(command, capture_output=True, text=True, timeout=60).stdout
         return json.loads(out.strip().splitlines()[-1])

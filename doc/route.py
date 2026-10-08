@@ -53,7 +53,8 @@ def main():
         decision = decide(task) if task else {"target": "claude", "why": "no task"}
     except jev.JevError as error:
         decision = {"target": "claude", "why": "router unavailable: %s" % error}
-    jev.note("route", decision["target"])
+    jev.note("route", decision["target"],
+             scores={k: decision[k] for k in ("confidence", "risky") if k in decision})
     print(json.dumps(decision))
 
 

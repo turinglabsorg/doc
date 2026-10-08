@@ -11,9 +11,8 @@ import json
 import os
 import re
 import shlex
-import sys
 
-from doc import jev
+from doc import event, jev
 
 # A publishing command in command position: at the start of a line or after
 # ; & | ( — optionally behind VAR=value assignments or a path — so a mention
@@ -106,7 +105,7 @@ def _read(path, cwd):
 
 
 def judge(text):
-    """Return (decision, reasons) for a comment: allow, ask or deny."""
+    """Return (decision, reasons, scores) for a comment: allow, ask or deny."""
     reasons = []
     paths = LOCAL_PATH.findall(text)
     if paths:
@@ -115,32 +114,33 @@ def judge(text):
         reasons.append("it contains an attribution/co-author line")
     hard = bool(reasons)
     worst = 0.0
+    scores = {}
     try:
         answers = jev.ask({"comment": text[:20000]}, QUESTIONS, purpose="publish_guard")
         for key, answer in answers.items():
-            value = answer["noul"]
+            value = scores[key] = answer["noul"]
             if value >= ASK_AT:
                 reasons.append("%s (%.2f)" % (REASONS[key], value))
                 worst = max(worst, value)
     except jev.JevError:
         pass
     if hard or worst >= DENY_AT:
-        return "deny", reasons
+        return "deny", reasons, scores
     if worst >= ASK_AT:
-        return "ask", reasons
-    return "allow", reasons
+        return "ask", reasons, scores
+    return "allow", reasons, scores
 
 
 def main():
-    payload = json.load(sys.stdin)
+    payload = event.read()
     command = (payload.get("tool_input") or {}).get("command") or ""
     if not PUBLISHING.search(command):
         return
     text = extract_text(command, payload.get("cwd"))
     if not text or not text.strip():
         return
-    decision, reasons = judge(text)
-    jev.note("publish_guard", decision)
+    decision, reasons, scores = judge(text)
+    jev.note("publish_guard", decision, payload["agent"], scores)
     if decision == "allow":
         return
     message = "doc: this comment breaks the publishing rules: " + "; ".join(reasons) + "."

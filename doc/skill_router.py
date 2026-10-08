@@ -6,18 +6,20 @@ ranking is already sure, its top skill is the answer; when it points at a skill
 without being sure, a second request re-reads the top three with their full
 description and the opening of their instructions, and may reject all of them;
 otherwise nothing is suggested. The winner becomes one line of context the agent
-is free to ignore, once per session. Texts the harness writes itself (stop-hook
-feedback, compaction summaries) are not requests and never reach Jev. Any
-failure adds nothing.
+is free to ignore, once per session: when the ranking's top skill was already
+suggested in this session, the turn most likely continues that work, so it
+stops there without a second request. Texts the harness writes itself
+(stop-hook feedback, compaction summaries) are not requests and never reach
+Jev. Grok discards the context a UserPromptSubmit hook adds, so under Grok Jev
+is never asked. Any failure adds nothing.
 """
 
 import glob
 import json
 import os
 import re
-import sys
 
-from doc import jev
+from doc import event, jev
 
 # Chosen on 120 real prompts labelled by hand (2026-09-23): 21 right, 2 wrong,
 # 6 missed, 127 Jev requests, against 20 / 9 / 7 / 173 for the previous flow
@@ -36,14 +38,9 @@ AUTOMATIC = ("<", "Stop hook feedback:", "This session is being continued", "A s
 SEEN_DIR = os.path.expanduser(os.environ.get("DOC_SKILL_SEEN_DIR", "~/.cache/doc/skill-router"))
 
 
-def is_codex(payload):
-    # Codex hook payloads carry a turn_id, and its transcripts live under ~/.codex.
-    return "turn_id" in payload or "/.codex/" in (payload.get("transcript_path") or "")
-
-
 def skill_dirs(payload):
     """Where the agent running this hook keeps its skills: user-level, shared, project."""
-    if is_codex(payload):
+    if event.agent(payload) == "codex":
         home = os.environ.get("CODEX_HOME") or "~/.codex"
         user, local = [os.path.join(home, "skills"), "~/.agents/skills"], [".codex/skills", ".agents/skills"]
     else:
@@ -83,7 +80,9 @@ def _parse(path):
     return meta, match.group(2)
 
 
-def suggest(prompt, skills):
+def suggest(prompt, skills, seen=()):
+    """Return (skill name or None, Jev's scores). `seen`: skills already suggested
+    in this session."""
     options = {s["name"]: s["description"][:400] for s in skills}
     options["none"] = "No listed skill is meant for this request"
     ranked = jev.ask(
@@ -100,10 +99,11 @@ def suggest(prompt, skills):
     )
     needs = ranked["needs"]["noul"]
     ranking = sorted(((p, n) for n, p in ranked["best"]["probabilities"].items() if n != "none"), reverse=True)
+    scores = {"needs": needs, "top": ranking[0][0] if ranking else 0.0}
     if not ranking or ranking[0][0] < TOP_MIN or needs < NEEDS_MIN:
-        return None
-    if ranking[0][0] >= DIRECT_AT and needs >= DIRECT_NEEDS:
-        return ranking[0][1]
+        return None, scores
+    if ranking[0][1] in seen or (ranking[0][0] >= DIRECT_AT and needs >= DIRECT_NEEDS):
+        return ranking[0][1], scores
     candidates = [name for _, name in ranking[:TOP]]
     by_name = {s["name"]: s for s in skills}
     detailed = [{"name": n, "description": by_name[n]["description"],
@@ -121,9 +121,11 @@ def suggest(prompt, skills):
         purpose="skill_verify",
     )
     scored = sorted(((fits["fit_%d" % i]["noul"], n) for i, n in enumerate(candidates)), reverse=True)
+    if scored:
+        scores["fit"] = scored[0][0]
     if scored and scored[0][0] >= FIT_AT:
-        return scored[0][1]
-    return None
+        return scored[0][1], scores
+    return None, scores
 
 
 def _seen_path(payload):
@@ -131,13 +133,14 @@ def _seen_path(payload):
     return os.path.join(SEEN_DIR, session) if session else None
 
 
-def already_suggested(payload, name):
+def suggested(payload):
+    """The skills already suggested in this session."""
     path = _seen_path(payload)
     try:
         with open(path, encoding="utf-8") as handle:
-            return name in handle.read().split()
+            return set(handle.read().split())
     except (OSError, TypeError):
-        return False
+        return set()
 
 
 def remember(payload, name):
@@ -153,21 +156,24 @@ def remember(payload, name):
 
 
 def main():
-    payload = json.load(sys.stdin)
+    payload = event.read()
+    if payload["agent"] == "grok":
+        return
     prompt = (payload.get("prompt") or "").strip()
     if len(prompt) < 20 or prompt.startswith(("/",) + AUTOMATIC):
         return
     skills = load_skills(skill_dirs(payload))
     if not skills:
         return
+    seen = suggested(payload)
     try:
-        name = suggest(prompt, skills)
+        name, scores = suggest(prompt, skills, seen)
     except (jev.JevError, KeyError):
         return
-    if name and already_suggested(payload, name):
-        jev.note("skill_router", "repeat:%s" % name)
+    if name in seen:
+        jev.note("skill_router", "repeat:%s" % name, payload["agent"], scores)
         return
-    jev.note("skill_router", "suggested:%s" % name if name else "none")
+    jev.note("skill_router", "suggested:%s" % name if name else "none", payload["agent"], scores)
     if not name:
         return
     remember(payload, name)

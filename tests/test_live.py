@@ -18,11 +18,11 @@ SKILLS = [
 @unittest.skipUnless(LIVE, "needs TYPESAFE_API_KEY (run through hush)")
 class PublishGuard(unittest.TestCase):
     def assertBlocked(self, text):
-        decision, reasons = publish_guard.judge(text)
+        decision, reasons, _ = publish_guard.judge(text)
         self.assertNotEqual(decision, "allow", "should not pass: %r" % text)
 
     def assertPasses(self, text):
-        decision, reasons = publish_guard.judge(text)
+        decision, reasons, _ = publish_guard.judge(text)
         self.assertEqual(decision, "allow", "%r -> %s %s" % (text, decision, reasons))
 
     def test_clean_report_passes(self):
@@ -52,33 +52,47 @@ class PublishGuard(unittest.TestCase):
 
 @unittest.skipUnless(LIVE, "needs TYPESAFE_API_KEY (run through hush)")
 class ReplyCheck(unittest.TestCase):
+    def score(self, reply, rule):
+        return reply_check.judge(reply, [rule])[rule]
+
     def test_effort_estimate_blocks(self):
-        self.assertGreaterEqual(reply_check.judge(
-            "Ci vorranno circa due giorni di sviluppo per completare la migrazione."), reply_check.BLOCK_AT)
+        self.assertGreaterEqual(self.score(
+            "Ci vorranno circa due giorni di sviluppo per completare la migrazione.", "effort"), reply_check.BLOCK_AT)
 
     def test_process_duration_passes(self):
-        self.assertLess(reply_check.judge(
-            "Fatto: il build dell'immagine impiega circa 4 minuti e ora gira sul Mac Pro."), reply_check.BLOCK_AT)
+        self.assertLess(self.score(
+            "Fatto: il build dell'immagine impiega circa 4 minuti e ora gira sul Mac Pro.", "effort"), reply_check.BLOCK_AT)
 
     def test_plain_report_passes(self):
-        self.assertLess(reply_check.judge(
-            "The test passes and the commit is on main; the deploy finished at 14:02."), reply_check.BLOCK_AT)
+        self.assertLess(self.score(
+            "The test passes and the commit is on main; the deploy finished at 14:02.", "effort"), reply_check.BLOCK_AT)
+
+    def test_secret_requested_in_chat_blocks(self):
+        for reply in ["Per continuare incollami qui in chat il token di accesso di GitHub.",
+                      "Please paste your Stripe API key here so I can configure the webhook."]:
+            self.assertGreaterEqual(self.score(reply, "secret_request"), reply_check.BLOCK_AT, reply)
+
+    def test_secret_through_hush_passes(self):
+        for reply in ["Manca il secret STRIPE_API_KEY in hush: mandamelo con un Bitwarden Send e lo importo.",
+                      "Il deploy usa il token DIGITALOCEAN letto da hush; non serve altro da parte tua.",
+                      "Ho ruotato la password del database e aggiornato il secret in hush."]:
+            self.assertLess(self.score(reply, "secret_request"), reply_check.BLOCK_AT, reply)
 
 
 @unittest.skipUnless(LIVE, "needs TYPESAFE_API_KEY (run through hush)")
 class SkillRouter(unittest.TestCase):
     def test_comment_goes_to_grog_answer(self):
         self.assertEqual(skill_router.suggest(
-            "Posta un riepilogo del lavoro come commento sulla issue https://github.com/o/r/issues/7", SKILLS),
+            "Posta un riepilogo del lavoro come commento sulla issue https://github.com/o/r/issues/7", SKILLS)[0],
             "grog-answer")
 
     def test_cloud_costs_go_to_devo(self):
         self.assertEqual(skill_router.suggest(
-            "Controlla i costi di DigitalOcean del mese scorso per il progetto acme", SKILLS), "devo")
+            "Controlla i costi di DigitalOcean del mese scorso per il progetto acme", SKILLS)[0], "devo")
 
     def test_general_question_needs_no_skill(self):
         self.assertIsNone(skill_router.suggest(
-            "Che differenza c'è tra let e const in JavaScript?", SKILLS))
+            "Che differenza c'è tra let e const in JavaScript?", SKILLS)[0])
 
 
 @unittest.skipUnless(LIVE, "needs TYPESAFE_API_KEY (run through hush)")

@@ -1,24 +1,30 @@
 # doc
 
 Scott's sidekick: small, fast, typed judgments from [TypeSafe's Jev](https://docs.typesafe.ai)
-wired into Claude Code, where ordinary code needs a bit of common sense.
+wired into Claude Code, Codex and Grok, where ordinary code needs a bit of common sense.
 
 | Part | Hook / command | What it does |
 |---|---|---|
 | `publish_guard` | PreToolUse (Bash) | Before `gh`/`grog` publishes a comment: exact rules in code (local paths, attribution lines), Jev for local-only state, effort estimates, process narration, billing. Deny with reasons, or ask when borderline. |
-| `reply_check` | Stop | Blocks a final reply that gives an effort or time estimate, once; the second stop always passes. Replies that name no duration never reach Jev. |
-| `skill_router` | UserPromptSubmit | Ranks every skill against the turn; answers at once when the ranking is sure, re-checks the top three only when it is not; adds one `<skill_relevance>` line the agent may ignore, once per skill per session. Harness texts (stop-hook feedback, compaction summaries) are skipped. |
+| `reply_check` | Stop | Blocks a final reply that gives an effort or time estimate, or asks the user to paste a secret into the chat, once; the second stop always passes. Each rule reaches Jev only when its text match fires (a duration, a secret's name), in one request. |
+| `skill_router` | UserPromptSubmit | Ranks every skill against the turn; answers at once when the ranking is sure, re-checks the top three only when it is not; adds one `<skill_relevance>` line the agent may ignore, once per skill per session. When the top skill was already suggested it stops after the ranking. Harness texts (stop-hook feedback, compaction summaries) are skipped, and under Grok it never runs. |
 | `doc "<task>"` | CLI | Mechanical, low-risk work the router is confident about goes to `oclaude`; everything else to `claude`. `--dry-run`, `-p`. |
 
 The TypeSafe key lives in hush as `TYPESAFE_API_KEY`; `bin/doc-hook` injects it with
 `hush run --redact`. Without hush or python3 a hook checks nothing and exits 0.
 Every Jev call (tokens, latency) and every decision (`publish_guard: deny`,
-`reply_check: passed`, `skill_router: suggested:devo`, `route: oclaude`) is logged —
-never the text that was judged — to `~/.cache/doc/usage.jsonl`.
+`reply_check: passed`, `skill_router: suggested:devo`, `route: oclaude`) is logged to
+`~/.cache/doc/usage.jsonl` with the agent that ran it and Jev's scores behind it
+(`"scores": {"local_state": 0.98, ...}`), so thresholds can be tuned on real traffic —
+never the text that was judged.
 
-Works the same in **Claude Code** and **Codex**: both speak the same hook protocol.
-Codex hands `reply_check` the reply itself (`last_assistant_message`) and keeps its
-skills in `~/.codex/skills`; `skill_router` reads the skills of whichever agent calls it.
+Works the same in **Claude Code**, **Codex** and **Grok**. Codex hands `reply_check` the
+reply itself (`last_assistant_message`) and keeps its skills in `~/.codex/skills`;
+`skill_router` reads the skills of whichever agent calls it. Grok runs the hooks it
+finds in `~/.claude/settings.json` with a camelCase payload (`toolInput`,
+`lastAssistantMessage`, `stopHookActive`), which `doc/event.py` reads into the same
+shape; it also fires an observe-only Stop at session end, which is skipped, and it
+discards what a UserPromptSubmit hook adds, so `skill_router` doesn't run there.
 
 ## Install
 
@@ -33,7 +39,13 @@ Register the hooks in `~/.claude/settings.json` and/or `~/.codex/hooks.json`:
 and link the CLI: `ln -s ~/doc/bin/doc /usr/local/bin/doc`.
 
 Codex runs a hook only once you trust it: on its next start it lists new or
-changed hooks for review, or use `/hooks`.
+changed hooks for review, or use `/hooks`. Grok needs nothing: it reads the Claude
+Code settings unless `[compat.claude] hooks = false` is set in `~/.grok/config.toml`.
+
+`DOC_USAGE_LOG`, `DOC_SKILL_SEEN_DIR` and `DOC_JEV_MODEL` override the defaults;
+`bin/doc-hook` and `bin/doc` pass them through `hush run`, whose child otherwise
+inherits only the key. The child may run on the host of a container, so these paths
+must exist there.
 
 ## Tests
 
