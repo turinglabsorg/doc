@@ -1,7 +1,11 @@
 # Agent instructions — doc
 
-- doc adds checks and hints to Claude Code through hooks; it must never loosen an
-  existing guard or allow anything another rule forbids.
+- doc adds checks and hints to every coding agent that runs its hooks (Claude Code,
+  Codex, Grok, Hermes); it must never loosen an existing guard or allow anything
+  another rule forbids.
+- The agents differ in payload keys and in the answers they read: a check reads its
+  input through `doc.event.read` and answers through `doc.event` helpers, never by
+  agent-specific keys or shapes of its own.
 - Hooks fail open on Jev errors (the exact rules in code still apply), never
   break a session, and never print or log secret values or message contents.
 - Keep Jev questions literal and narrow (see the TypeSafe jaggedness page); keep

@@ -3,11 +3,11 @@
 Scott's sidekick: small, fast, typed judgments from [TypeSafe's Jev](https://docs.typesafe.ai)
 wired into Claude Code, Codex, Grok and Hermes, where ordinary code needs a bit of common sense.
 
-| Part | Hook / command | What it does |
+| Part | Hook (Claude Code, Codex, Grok · Hermes) / command | What it does |
 |---|---|---|
-| `publish_guard` | PreToolUse (Bash) | Before `gh`/`grog` publishes a comment: exact rules in code (local paths, attribution lines), Jev for local-only state, effort estimates, process narration, billing. Deny with reasons, or ask when borderline. |
-| `reply_check` | Stop | Blocks a final reply that gives an effort or time estimate, or asks the user to paste a secret into the chat, once; the second stop always passes. Each rule reaches Jev only when its text match fires (a duration, a secret's name), in one request. |
-| `skill_router` | UserPromptSubmit | Ranks every skill against the turn; answers at once when the ranking is sure, re-checks the top three only when it is not; adds one `<skill_relevance>` line the agent may ignore, once per skill per session. When the top skill was already suggested it stops after the ranking. Harness texts (stop-hook feedback, compaction summaries) are skipped, and under Grok it never runs. |
+| `publish_guard` | PreToolUse (Bash) · `pre_tool_call` (terminal) | Before `gh`/`grog` publishes a comment: exact rules in code (local paths, attribution lines), Jev for local-only state, effort estimates, process narration, billing. Deny with reasons, or ask when borderline. |
+| `reply_check` | Stop · `pre_verify` | Blocks a final reply that gives an effort or time estimate, or asks the user to paste a secret into the chat, once; the second stop always passes. Each rule reaches Jev only when its text match fires (a duration, a secret's name), in one request. |
+| `skill_router` | UserPromptSubmit · `pre_llm_call` | Ranks every skill against the turn; answers at once when the ranking is sure, re-checks the top three only when it is not; adds one `<skill_relevance>` line the agent may ignore, once per skill per session. When the top skill was already suggested it stops after the ranking. Harness texts (stop-hook feedback, compaction summaries) are skipped, and under Grok it never runs. |
 | `doc "<task>"` | CLI | Mechanical, low-risk work the router is confident about goes to `oclaude`; everything else to `claude`. `--dry-run`, `-p`. |
 
 The TypeSafe key lives in hush as `TYPESAFE_API_KEY`; `bin/doc-hook` injects it with
