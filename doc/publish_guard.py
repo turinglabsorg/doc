@@ -12,7 +12,7 @@ import os
 import re
 import shlex
 
-from doc import event, jev
+from doc import event, jev, rules
 
 # A publishing command in command position: at the start of a line or after
 # ; & | ( — optionally behind VAR=value assignments or a path — so a mention
@@ -110,8 +110,18 @@ def _read(path, cwd):
         return None
 
 
-def judge(text):
-    """Return (decision, reasons, scores) for a comment: allow, ask or deny."""
+def judge(text, settings=None):
+    """Return (decision, reasons, scores) for a comment: allow, ask or deny. The
+    built-in Jev questions the owner kept and the owner's added ones (doc.rules)
+    are asked together; the exact rules always apply."""
+    settings = rules.load() if settings is None else settings
+    questions = {key: question for key, question in QUESTIONS.items() if not rules.is_off(settings, "comment", key)}
+    reasons_for = dict(REASONS)
+    deny_at = {key: DENY_AT for key in questions}
+    for rule in rules.added("comment", text, settings):
+        questions[rule["key"]] = rules.question(rule, "comment")
+        reasons_for[rule["key"]] = "it %s" % rule["reason"]
+        deny_at[rule["key"]] = rule["threshold"]
     reasons = []
     paths = LOCAL_PATH.findall(text)
     if paths:
@@ -119,20 +129,21 @@ def judge(text):
     if ATTRIBUTION.search(text):
         reasons.append("it contains an attribution/co-author line")
     hard = bool(reasons)
-    worst = 0.0
+    denied = asked = False
     scores = {}
     try:
-        answers = jev.ask({"comment": text[:20000]}, QUESTIONS, purpose="publish_guard")
+        answers = jev.ask({"comment": text[:20000]}, questions, purpose="publish_guard") if questions else {}
         for key, answer in answers.items():
             value = scores[key] = answer["noul"]
             if value >= ASK_AT:
-                reasons.append("%s (%.2f)" % (REASONS[key], value))
-                worst = max(worst, value)
+                reasons.append("%s (%.2f)" % (reasons_for[key], value))
+                denied = denied or value >= deny_at[key]
+                asked = True
     except jev.JevError:
         pass
-    if hard or worst >= DENY_AT:
+    if hard or denied:
         return "deny", reasons, scores
-    if worst >= ASK_AT:
+    if asked:
         return "ask", reasons, scores
     return "allow", reasons, scores
 
@@ -145,13 +156,17 @@ def main():
     text = extract_text(command, payload.get("cwd"))
     if not text or not text.strip():
         return
-    decision, reasons, scores = judge(text)
+    settings = rules.load()
+    decision, reasons, scores = judge(text, settings)
     jev.note("publish_guard", decision, payload["agent"], scores)
     if decision == "allow":
         return
     message = "doc: this comment breaks the publishing rules: " + "; ".join(reasons) + "."
     if decision == "deny":
         message += " Rewrite it to report only impact, root cause, behavior, verified results and remote links."
+    fixes = [rule["fix"] for rule in rules.added("comment", text, settings) if scores.get(rule["key"], 0) >= ASK_AT]
+    if fixes:
+        message += " " + " ".join(dict.fromkeys(fixes))
     print(json.dumps(event.permission(payload, decision, message)))
 
 

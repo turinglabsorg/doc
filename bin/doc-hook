@@ -32,7 +32,7 @@ hush_bin="$(command -v hush 2>/dev/null)"
 [ -n "$hush_bin" ] || { [ -x "$HOME/.local/bin/hush" ] && hush_bin="$HOME/.local/bin/hush"; }
 [ -n "$hush_bin" ] || exit 0
 set -- PYTHONPATH="$root"
-for name in DOC_USAGE_LOG DOC_SKILL_SEEN_DIR DOC_JEV_MODEL; do
+for name in DOC_USAGE_LOG DOC_SKILL_SEEN_DIR DOC_JEV_MODEL DOC_RULES; do
     eval "value=\${$name-}"
     [ -n "$value" ] && set -- "$@" "$name=$value"
 done

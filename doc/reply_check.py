@@ -17,7 +17,7 @@ a mention of a secret's name or of hush.
 import json
 import re
 
-from doc import event, jev
+from doc import event, jev, rules
 
 BLOCK_AT = 0.8
 
@@ -87,17 +87,31 @@ def last_reply(transcript_path):
     return text
 
 
-def rules_for(reply):
-    """The rules whose text match fires on `reply`: only these reach Jev."""
-    return [name for name, rule in RULES.items() if rule["match"].search(reply)]
+def active(reply, settings=None):
+    """The rules that read `reply`: the built-in ones the owner kept whose text match
+    fires, and the owner's added ones (see doc.rules), each with its threshold."""
+    settings = rules.load() if settings is None else settings
+    chosen = {name: {**rule, "threshold": BLOCK_AT} for name, rule in RULES.items()
+              if not rules.is_off(settings, "reply", name) and rule["match"].search(reply)}
+    for rule in rules.added("reply", reply, settings):
+        chosen[rule["key"]] = {"question": rules.question(rule, "reply"), "reason": rule["reason"],
+                               "fix": rule["fix"], "threshold": rule["threshold"]}
+    return chosen
 
 
-def judge(reply, rules=None):
-    """Jev's score for each of `rules` (all of them when None), in one request."""
-    rules = rules or list(RULES)
-    answers = jev.ask({"reply": reply[:20000]}, {name: RULES[name]["question"] for name in rules},
-                      purpose="reply_check")
-    return {name: answers[name]["noul"] for name in rules}
+def rules_for(reply, settings=None):
+    """The rules that read `reply`: only these reach Jev."""
+    return list(active(reply, settings))
+
+
+def judge(reply, names=None, settings=None):
+    """Jev's score for each of `names` (every rule that reads `reply` when None), in one request."""
+    chosen = active(reply, settings)
+    if names is None:
+        names = list(chosen)
+    questions = {name: (chosen.get(name) or RULES[name])["question"] for name in names}
+    answers = jev.ask({"reply": reply[:20000]}, questions, purpose="reply_check")
+    return {name: answers[name]["noul"] for name in names}
 
 
 def main():
@@ -111,22 +125,22 @@ def main():
     reply = payload.get("last_assistant_message") or last_reply(payload.get("transcript_path") or "")
     if len(reply.strip()) < 40:
         return
-    rules = rules_for(reply)
-    if not rules:
+    chosen = active(reply)
+    if not chosen:
         jev.note("reply_check", "skipped", payload["agent"])
         return
     try:
-        scores = judge(reply, rules)
+        scores = judge(reply, list(chosen))
     except jev.JevError:
         return
-    broken = [name for name in rules if scores[name] >= BLOCK_AT]
+    broken = [name for name in chosen if scores[name] >= chosen[name]["threshold"]]
     jev.note("reply_check", "blocked" if broken else "passed", payload["agent"], scores)
     if broken:
         print(json.dumps({
             "decision": "block",
             "reason": "doc: your last reply %s, which the user's rules forbid. %s" % (
-                " and ".join("%s (%.2f)" % (RULES[name]["reason"], scores[name]) for name in broken),
-                " ".join(RULES[name]["fix"] for name in broken)),
+                " and ".join("%s (%.2f)" % (chosen[name]["reason"], scores[name]) for name in broken),
+                " ".join(dict.fromkeys(chosen[name]["fix"] for name in broken))),
         }))
 
 

@@ -174,9 +174,10 @@ class HookWrapper(unittest.TestCase):
 
     def test_doc_settings_cross_hush(self):
         args = self.hush_args("reply_check", {"session_id": "s"}, DOC_USAGE_LOG="/x/usage log.jsonl",
-                              DOC_JEV_MODEL="jev-test")
+                              DOC_JEV_MODEL="jev-test", DOC_RULES="/x/rules.json")
         self.assertIn("DOC_USAGE_LOG=/x/usage log.jsonl", args)
         self.assertIn("DOC_JEV_MODEL=jev-test", args)
+        self.assertIn("DOC_RULES=/x/rules.json", args)
         self.assertFalse(any(a.startswith("DOC_SKILL_SEEN_DIR") for a in args))
         self.assertEqual(args[args.index("--") + 1], "env")
 
@@ -419,6 +420,112 @@ class Outcomes(unittest.TestCase):
         entry = json.loads(open(log).read())
         self.assertEqual(entry["agent"], "grok")
         self.assertEqual(entry["scores"], {"effort": 0.612})
+
+
+
+class OwnerRules(unittest.TestCase):
+    """DOC_RULES: built-in Jev rules turned off, and rules of the owner's own."""
+
+    def setUp(self):
+        self.path = os.path.join(tempfile.mkdtemp(), "rules.json")
+
+    def settings(self, data):
+        from doc import rules
+        with open(self.path, "w") as handle:
+            handle.write(data if isinstance(data, str) else json.dumps(data))
+        with mock.patch.dict(os.environ, {"DOC_RULES": self.path}):
+            return rules.load()
+
+    def test_without_the_variable_nothing_changes(self):
+        from doc import reply_check, rules
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(rules.load(), {"off": set(), "add": []})
+        self.assertEqual(reply_check.rules_for("Ci vogliono due giorni.", {"off": set(), "add": []}), ["effort"])
+
+    def test_a_broken_file_or_rule_is_left_out(self):
+        self.assertEqual(self.settings("{not json"), {"off": set(), "add": []})
+        settings = self.settings({"off": ["effort", 3], "add": [
+            {"key": "effort", "on": ["reply"], "question": "Shadows a built-in?"},
+            {"key": "Bad Key", "on": ["reply"], "question": "Q?"},
+            {"key": "no_question", "on": ["reply"]},
+            {"key": "nowhere", "on": ["email"], "question": "Q?"},
+            {"key": "clients", "on": ["reply", "email"], "question": "Names a client?", "threshold": 2, "keywords": ["ACME", " "]},
+        ]})
+        self.assertEqual(settings["off"], {"effort"})
+        self.assertEqual([rule["key"] for rule in settings["add"]], ["clients"])
+        self.assertEqual(settings["add"][0]["on"], ["reply"])
+        self.assertEqual(settings["add"][0]["threshold"], 0.8)
+        self.assertEqual(settings["add"][0]["keywords"], ["acme"])
+
+    def test_reply_rules_follow_the_settings(self):
+        from doc import reply_check
+        settings = self.settings({"off": ["effort"], "add": [
+            {"key": "clients", "on": ["reply"], "question": "Does it name a client?", "keywords": ["acme"],
+             "reason": "names a client", "fix": "Leave the client out.", "threshold": 0.7},
+            {"key": "promises", "on": ["reply"], "question": "Does it promise a date?"},
+            {"key": "comments_only", "on": ["comment"], "question": "Q?"},
+        ]})
+        self.assertEqual(reply_check.rules_for("Ci vogliono due giorni per ACME.", settings), ["clients", "promises"])
+        self.assertEqual(reply_check.rules_for("Ci vogliono due giorni.", settings), ["promises"])
+        with mock.patch.dict(os.environ, {"DOC_RULES": self.path}), \
+                mock.patch("doc.jev.ask", return_value={"clients": {"noul": 0.75}, "promises": {"noul": 0.1}}) as ask, \
+                mock.patch("doc.jev.note"), \
+                mock.patch("sys.stdin", io.StringIO(json.dumps({"last_assistant_message": "Ho mandato il preventivo ad ACME Srl stamattina, firmano domani."}))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            reply_check.main()
+        questions = ask.call_args[0][1]
+        self.assertEqual(set(questions), {"clients", "promises"})
+        self.assertIn("Does it name a client?", questions["clients"]["instructions"])
+        answer = json.loads(out.getvalue())
+        self.assertEqual(answer["decision"], "block")
+        self.assertIn("names a client (0.75)", answer["reason"])
+        self.assertIn("Leave the client out.", answer["reason"])
+
+    def test_comment_rules_follow_the_settings_and_exact_rules_stay(self):
+        from doc import publish_guard
+        settings = self.settings({"off": ["process_log", "billing", "effort", "local_state"], "add": [
+            {"key": "clients", "on": ["comment"], "question": "Does it name a client?", "reason": "names a client"}]})
+        with mock.patch("doc.jev.ask", return_value={"clients": {"noul": 0.9}}) as ask:
+            decision, reasons, _ = publish_guard.judge("Shipped for ACME.", settings)
+        self.assertEqual(set(ask.call_args[0][1]), {"clients"})
+        self.assertEqual((decision, reasons), ("deny", ["it names a client (0.90)"]))
+        command = {"tool_input": {"command": 'gh pr comment 3 --body "Shipped for ACME."'}}
+        with mock.patch.dict(os.environ, {"DOC_RULES": self.path}), \
+                mock.patch("doc.jev.ask", return_value={"clients": {"noul": 0.9}}), mock.patch("doc.jev.note"), \
+                mock.patch("sys.stdin", io.StringIO(json.dumps(command))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            publish_guard.main()
+        reason = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertTrue(reason.endswith("Rewrite it."), reason)
+        with mock.patch("doc.jev.ask", return_value={}) as ask:
+            decision, reasons, _ = publish_guard.judge("See /Users/someone/x.txt", {"off": {"process_log", "billing", "effort", "local_state"}, "add": []})
+        ask.assert_not_called()
+        self.assertEqual(decision, "deny", "turning every Jev rule off leaves the exact rules on")
+
+    def test_one_kind_of_text_can_lose_a_rule_and_a_rule_can_rest(self):
+        from doc import publish_guard, reply_check
+        settings = self.settings({"off": ["reply:effort"], "add": [
+            {"key": "resting", "on": ["reply"], "question": "Q?", "enabled": False}]})
+        self.assertEqual(reply_check.rules_for("Ci vogliono due giorni.", settings), [])
+        with mock.patch("doc.jev.ask", return_value={}) as ask:
+            publish_guard.judge("It took two days.", settings)
+        self.assertIn("effort", ask.call_args[0][1], "comments keep the effort rule")
+
+    def test_a_draft_rule_is_scored_alone(self):
+        from doc import rules
+        with mock.patch("doc.jev.ask", return_value={"rule": {"noul": 0.93}}) as ask:
+            self.assertEqual(rules.score("comment", "Done for ACME.", {"question": "Does it name a client?"}), 0.93)
+        self.assertEqual(ask.call_args[0][0], {"comment": "Done for ACME."})
+        with mock.patch("sys.stdin", io.StringIO(json.dumps({"target": "reply", "text": "x", "rule": {}}))), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            rules.main(["try"])
+        self.assertEqual(json.loads(out.getvalue()), {"error": "the rule has no question"})
+
+    def test_builtins_are_listed(self):
+        from doc import rules
+        self.assertEqual({(rule["key"], rule["on"]) for rule in rules.builtins()}, {
+            ("effort", "reply"), ("secret_request", "reply"), ("local_state", "comment"),
+            ("effort", "comment"), ("process_log", "comment"), ("billing", "comment")})
 
 
 if __name__ == "__main__":

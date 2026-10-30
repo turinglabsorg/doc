@@ -32,6 +32,29 @@ Hermes runs the hooks listed in its own `~/.hermes/config.yaml`, under its event
 its shape. Its `pre_verify` fires only on turns that edited files, so there
 `reply_check` checks those replies only.
 
+## Owner rules
+
+`DOC_RULES` names a JSON file that turns built-in Jev rules off and adds rules of the
+owner's own, for `reply_check` (`"reply"`), `publish_guard` (`"comment"`) or both. Cora
+writes it from its panel for its own agents; without the variable nothing changes. The
+exact rules in code (local paths, attribution lines) are not Jev rules and stay on.
+
+```json
+{"off": ["process_log"],
+ "add": [{"key": "client_names", "on": ["reply", "comment"],
+          "question": "Does it name a client company or a client's contact person?",
+          "reason": "names a client", "fix": "Leave the client's name out.",
+          "keywords": ["acme"], "threshold": 0.8}]}
+```
+
+A built-in rule is turned off by its key, or for one kind of text by `reply:<key>` or
+`comment:<key>`; an added rule with `"enabled": false` is kept but not asked. An added
+rule reads every text of its kind, or only those holding one of its keywords,
+and stops one when Jev's score reaches its threshold (0.8 unless set). A file or a rule
+that does not make sense is left out. `python3 -m doc.rules` lists the built-in Jev rules,
+and `python3 -m doc.rules try` scores one draft rule on a text read as
+`{"target", "text", "rule"}` from stdin, so a rule can be tried before it is saved.
+
 ## Install
 
 Register the hooks in `~/.claude/settings.json` and/or `~/.codex/hooks.json`:
@@ -62,7 +85,7 @@ changed hooks for review, or use `/hooks`. Hermes asks once per hook at its firs
 interactive start (or `hermes --accept-hooks`). Grok needs nothing: it reads the Claude
 Code settings unless `[compat.claude] hooks = false` is set in `~/.grok/config.toml`.
 
-`DOC_USAGE_LOG`, `DOC_SKILL_SEEN_DIR` and `DOC_JEV_MODEL` override the defaults;
+`DOC_USAGE_LOG`, `DOC_SKILL_SEEN_DIR`, `DOC_JEV_MODEL` and `DOC_RULES` override the defaults;
 `bin/doc-hook` and `bin/doc` pass them through `hush run`, whose child otherwise
 inherits only the key. The child may run on the host of a container, so these paths
 must exist there.
