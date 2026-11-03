@@ -1,10 +1,16 @@
-"""PreToolUse (Bash): check a GitHub or Linear comment before it is published.
+"""PreToolUse (Bash): check a GitHub or Linear comment before it is published,
+and a chat message before grog sends it.
 
 Code finds the publishing commands and the text they would post, and checks the
 exact rules (local paths, attribution lines). Jev judges the rules that need
 reading: local-only state, effort estimates, the agent's own process, billing.
 A clear violation is denied with the reasons, so the agent rewrites the text; a
 borderline one asks the user. If Jev is unavailable the exact rules still apply.
+
+grog's text commands (`send`, `discord-send`, `telegram-send`, `whatsapp-send`)
+post what they are given as message text: a file handed to them arrives as its
+path or its raw bytes, never as a file. Code denies that, exactly, and names the
+command that attaches it (`*-send-image`, `*-send-document`).
 """
 
 import json
@@ -25,6 +31,15 @@ PUBLISHING = re.compile(
     r"|gh\s+api\b[^|;&\n]*\bcomments?\b"
     r"|(?:node\s+\S*/)?grog(?:/index\.js)?\s+(?:answer|create|update))\b"
 )
+# grog's commands that post text, in command position as above; `discord-send-image` and the
+# other attaching commands are not among them.
+CHAT_TEXT = re.compile(
+    r"(?:^|[;&|(\n])\s*(?:\w+=\S*\s+)*(?:\S*/)?(?:node\s+\S*/)?grog(?:/index\.js)?\s+"
+    r"(send|discord-send|telegram-send|whatsapp-send)(?=\s|$)"
+)
+# What a message file may be: the text commands read .md, .txt or an extensionless file as the message.
+MESSAGE_FILE = re.compile(r"\.(?:md|txt)$", re.IGNORECASE)
+FILE_NAME = re.compile(r"^[^\s]*\.[A-Za-z0-9]{2,5}$")
 TEXT_FLAGS = {"--body", "-b", "--description"}
 FILE_FLAGS = {"--body-file", "-F", "--description-file"}
 LOCAL_PATH = re.compile(r"(?<![\w.])(?:/Users/|/home/|/private/|/var/folders/|/tmp/)[^\s)\"'`]+")
@@ -110,6 +125,46 @@ def _read(path, cwd):
         return None
 
 
+def attachment_as_text(command):
+    """The file a grog text command would post as text, with that command, or None.
+
+    A word after the command that names a file with an extension other than .md/.txt
+    (no spaces, so a sentence ending in "shot.png" is a message, not a file) is a file
+    being sent through the wrong command; flag values (a channel id, a contact) carry
+    no extension.
+    """
+    for line in without_heredoc_bodies(command).split("\n"):
+        found = CHAT_TEXT.search(line)
+        if not found:
+            continue
+        try:
+            words = shlex.split(line[found.end():])
+        except ValueError:
+            continue
+        for word in words:
+            if re.match(r"^[;&|]", word):
+                break
+            if word.startswith("-") or not FILE_NAME.match(word) or MESSAGE_FILE.search(word):
+                continue
+            return found.group(1), word
+    return None
+
+
+def attachment_message(subcommand, path):
+    """Why the send is refused, and the command that would attach the file."""
+    platform = {"discord-send": "discord", "telegram-send": "telegram", "whatsapp-send": "whatsapp"}.get(subcommand, "<discord|telegram>")
+    image = re.search(r"\.(?:png|jpe?g|gif|webp)$", path, re.IGNORECASE)
+    if image:
+        right = "grog %s-send-image <destination> %s \"caption\"" % (platform, path)
+    elif platform == "whatsapp":
+        right = "a link: WhatsApp takes images only"
+    else:
+        right = "grog %s-send-document <destination> %s \"caption\"" % (platform, path)
+    return ("doc: `grog %s` posts what it is given as message text, so %s would arrive as text "
+            "(its path or its raw bytes), not as a file. Send it with %s, then read the channel "
+            "back to check the attachment arrived." % (subcommand, path, right))
+
+
 def judge(text, settings=None):
     """Return (decision, reasons, scores) for a comment: allow, ask or deny. The
     built-in Jev questions the owner kept and the owner's added ones (doc.rules)
@@ -151,6 +206,11 @@ def judge(text, settings=None):
 def main():
     payload = event.read()
     command = (payload.get("tool_input") or {}).get("command") or ""
+    attached = attachment_as_text(command)
+    if attached:
+        jev.note("publish_guard", "deny", payload["agent"], {"attachment_as_text": 1.0})
+        print(json.dumps(event.permission(payload, "deny", attachment_message(*attached))))
+        return
     if not PUBLISHING.search(without_heredoc_bodies(command)):
         return
     text = extract_text(command, payload.get("cwd"))

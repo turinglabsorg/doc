@@ -79,6 +79,53 @@ class ExactRulesWithoutJev(unittest.TestCase):
         self.assertEqual(decision, "allow")
 
 
+class AttachmentAsText(unittest.TestCase):
+    """grog's text commands post a file as text: doc refuses it and names the command that attaches."""
+
+    def test_files_handed_to_a_text_command_are_caught(self):
+        for command, expected in [
+            ("grog discord-send --channel 123 ~/out/shot.png", ("discord-send", "~/out/shot.png")),
+            ('grog discord-send --channel 123 "$HOME/previews/avatars.png"', ("discord-send", "$HOME/previews/avatars.png")),
+            ("grog send --discord report.pdf", ("send", "report.pdf")),
+            ("cd out && grog telegram-send --to me video.mp4", ("telegram-send", "video.mp4")),
+            ("node ~/.codex/tools/grog/index.js discord-send --channel 1 data.csv", ("discord-send", "data.csv")),
+        ]:
+            with self.subTest(command=command):
+                self.assertEqual(publish_guard.attachment_as_text(command), expected)
+
+    def test_messages_and_attaching_commands_pass(self):
+        for command in [
+            "grog telegram-send --to me ~/grog-talk-response.txt",
+            "grog discord-send --channel 1 ~/notes.md",
+            'grog discord-send --channel 1 "ecco shot.png"',
+            'grog discord-send-image --channel 1 shot.png "caption"',
+            'grog telegram-send-document --to me report.pdf "caption"',
+            'grog send --discord "fatto" && ls shot.png',
+            "echo grog discord-send shot.png",
+            "cat > send.sh <<'EOF'\ngrog discord-send --channel 1 shot.png\nEOF",
+        ]:
+            with self.subTest(command=command):
+                self.assertIsNone(publish_guard.attachment_as_text(command))
+
+    def test_the_agent_is_told_which_command_attaches(self):
+        image = publish_guard.attachment_message("discord-send", "~/out/shot.png")
+        self.assertIn("grog discord-send-image <destination> ~/out/shot.png", image)
+        document = publish_guard.attachment_message("telegram-send", "report.pdf")
+        self.assertIn("grog telegram-send-document <destination> report.pdf", document)
+        self.assertIn("link", publish_guard.attachment_message("whatsapp-send", "report.pdf"))
+
+    def test_the_send_is_denied_without_asking_jev(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "grog discord-send --channel 1 ~/out/shot.png"}}
+        out = io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), mock.patch("sys.stdout", out), \
+                mock.patch.object(publish_guard.jev, "ask", side_effect=AssertionError("no Jev")), \
+                mock.patch.object(publish_guard.jev, "note"):
+            publish_guard.main()
+        answer = json.loads(out.getvalue())["hookSpecificOutput"]
+        self.assertEqual(answer["permissionDecision"], "deny")
+        self.assertIn("discord-send-image", answer["permissionDecisionReason"])
+
+
 class BothAgents(unittest.TestCase):
     def test_reply_from_codex_payload(self):
         from doc import reply_check
@@ -148,9 +195,15 @@ class HookWrapper(unittest.TestCase):
     def test_publishing_commands_reach_the_check(self):
         for command in ['gh pr comment 12 --body "Fixed"', 'cd app\ngh issue create --title T --body B',
                         "gh api repos/acme/app/issues/3/comments -f body=hi", "grog answer https://x y.md",
-                        "node ~/.codex/tools/grog/index.js answer https://x y.md"]:
+                        "node ~/.codex/tools/grog/index.js answer https://x y.md",
+                        "grog discord-send --channel 1 ~/out/shot.png", "grog send --discord x.pdf"]:
             with self.subTest(command=command):
                 self.assertTrue(self.started_hush("publish_guard", command))
+
+    def test_attaching_commands_skip_hush(self):
+        for command in ['grog discord-send-image --channel 1 shot.png "c"', "grog discord-read --channel 1 --limit 5"]:
+            with self.subTest(command=command):
+                self.assertFalse(self.started_hush("publish_guard", command))
 
     def test_other_hooks_always_run(self):
         self.assertTrue(self.started_hush("skill_router", "anything"))
